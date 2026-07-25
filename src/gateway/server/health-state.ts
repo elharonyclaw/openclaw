@@ -1,6 +1,6 @@
 // Gateway health state builds snapshots, caches health probes, and broadcasts health/presence version changes.
 import type { Snapshot } from "../../../packages/gateway-protocol/src/index.js";
-import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { tryResolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { createConfigIO, getRuntimeConfig } from "../../config/io.js";
 import { STATE_DIR } from "../../config/paths.js";
 import { getRuntimeConfigAppliedHash } from "../../config/runtime-snapshot.js";
@@ -47,9 +47,9 @@ const healthRefreshStates: Record<HealthAudience, HealthRefreshState> = {
 
 export function buildGatewaySnapshot(opts?: { includeSensitive?: boolean }): Snapshot {
   const cfg = getRuntimeConfig();
-  const defaultAgentId = resolveDefaultAgentId(cfg);
+  const defaultAgentId = tryResolveDefaultAgentId(cfg);
   const mainKey = normalizeMainKey(cfg.session?.mainKey);
-  const mainSessionKey = resolveMainSessionKey(cfg);
+  const mainSessionKey = defaultAgentId ? resolveMainSessionKey(cfg) : undefined;
   const scope = cfg.session?.scope ?? "per-sender";
   const presence = listSystemPresence();
   const uptimeMs = Math.round(process.uptime() * 1000);
@@ -63,9 +63,9 @@ export function buildGatewaySnapshot(opts?: { includeSensitive?: boolean }): Sna
     uptimeMs,
     appliedConfigHash: getRuntimeConfigAppliedHash(),
     sessionDefaults: {
-      defaultAgentId,
+      ...(defaultAgentId ? { defaultAgentId } : {}),
       mainKey,
-      mainSessionKey,
+      ...(mainSessionKey ? { mainSessionKey } : {}),
       scope,
     },
     updateAvailable,

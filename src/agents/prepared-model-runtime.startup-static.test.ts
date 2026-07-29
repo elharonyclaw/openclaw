@@ -122,6 +122,7 @@ vi.mock("./agent-scope.js", () => ({
   resolveAgentWorkspaceDir: () => "/tmp/prepared-static-workspace",
   resolveDefaultAgentDir: () => "/tmp/prepared-static-agent",
   resolveDefaultAgentId: () => "default",
+  tryResolveSoleAgentId: () => "default",
 }));
 
 vi.mock("./auth-profiles/runtime-snapshots.js", () => ({

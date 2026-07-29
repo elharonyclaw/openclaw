@@ -2026,6 +2026,7 @@ describe("tui command handlers", () => {
 
     expect(sendChat).toHaveBeenCalledTimes(1);
     expectSendChatFields(sendChat, {
+      agentId: "main",
       message: "continue here",
       sessionKey: "agent:main:main",
     });

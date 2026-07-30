@@ -277,6 +277,7 @@ export type ActivateSetupInferenceDeps = {
 };
 
 export type DetectSetupInferenceDeps = {
+  targetAgentId?: string;
   detectInferenceBackends?: typeof detectInferenceBackends;
   probeLocalCommand?: typeof probeLocalCommand;
   resolveManifestProviderAuthChoices?: typeof resolveManifestProviderAuthChoices;

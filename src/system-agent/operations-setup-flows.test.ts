@@ -152,6 +152,8 @@ describe("system agent setup-flow operations", () => {
 
     expect(result.applied).toBe(false);
     expect(lines.join("\n")).toContain("Run `openclaw onboard` on the machine running OpenClaw");
+    expect(lines.join("\n")).toContain("Stop the OpenClaw host");
+    expect(lines.join("\n")).toContain("restart the host");
     expect(lines.join("\n")).not.toContain("openclaw configure --section model");
   });
 

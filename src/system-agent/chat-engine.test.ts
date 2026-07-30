@@ -686,8 +686,9 @@ describe("SystemAgentChatEngine", () => {
     // into a shell; the copy must name where the command runs instead.
     expect(reply.text).toContain("`openclaw onboard`");
     expect(reply.text).toContain("machine running OpenClaw");
-    expect(reply.text).toContain("Return to OpenClaw");
-    expect(reply.text).not.toContain("start OpenClaw again");
+    expect(reply.text).toContain("Stop the OpenClaw host");
+    expect(reply.text).toContain("restart the host");
+    expect(reply.text).toContain("return to OpenClaw");
     expect(reply.text).not.toContain("Exit OpenClaw");
   });
 

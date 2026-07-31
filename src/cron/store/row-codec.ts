@@ -1,8 +1,6 @@
 /** Converts cron jobs between public store shape and normalized SQLite rows. */
 import type { DatabaseSync } from "node:sqlite";
-import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { stableStringify } from "../../agents/stable-stringify.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { normalizeOptionalAccountId } from "../../routing/account-id.js";
@@ -19,6 +17,17 @@ import type { CronJob, CronJobState, CronPacing, CronSchedule, CronStoreFile } f
 import { bindDeliveryColumns, deliveryFromRow } from "./delivery-codec.js";
 import { bindFailureAlertColumns, failureAlertFromRow } from "./failure-alert-codec.js";
 import { bindPayloadColumns, payloadFromRow } from "./payload-codec.js";
+import {
+  CronRuntimeRevisionMismatchError,
+  CronStoreEpochMismatchError,
+  CronStoreTopologyMismatchError,
+  incrementCronRuntimeRevision,
+  incrementCronStoreEpoch,
+  readCronRuntimeRevision,
+  readCronStoreEpoch,
+  writeCronStoreEpoch,
+} from "./row-revisions.js";
+import { cronRowTopologyFingerprint, cronStoreTopologyMatches } from "./row-topology.js";
 import { preserveConcurrentCronRuntime } from "./runtime-merge.js";
 import { writeCronRuntimeRowDeltas } from "./runtime-row-writes.js";
 import {
@@ -32,6 +41,15 @@ import { ensureCronStoreEpochSchema, getCronStoreKysely } from "./schema.js";
 import { bindStateColumns, stateFromRow } from "./state-codec.js";
 import { bindTriggerColumns, triggerFromRow } from "./trigger-codec.js";
 import type { LoadedCronStore } from "./types.js";
+
+export {
+  CronRuntimeRevisionMismatchError,
+  CronStoreEpochMismatchError,
+  CronStoreTopologyMismatchError,
+  incrementCronStoreEpoch,
+  readCronRuntimeRevision,
+  readCronStoreEpoch,
+} from "./row-revisions.js";
 
 function bindScheduleColumns(
   schedule: CronSchedule,
@@ -395,184 +413,6 @@ export function loadCronRowsWithEpoch(
   }));
 }
 
-function cronRuntimeRevisionKey(storeKey: string): string {
-  // Cron store keys are absolute paths, so this non-path namespace cannot collide with a store.
-  return `runtime-revision:${storeKey}`;
-}
-
-/** Current full-store topology revision for one cron partition. */
-export function readCronStoreEpoch(
-  db: DatabaseSync,
-  storeKey: string,
-  options?: { ensureSchema?: boolean },
-): number {
-  if (options?.ensureSchema !== false) {
-    ensureCronStoreEpochSchema(db);
-  }
-  return (
-    executeSqliteQuerySync(
-      db,
-      getCronStoreKysely(db)
-        .selectFrom("cron_store_epochs")
-        .select("store_epoch")
-        .where("store_key", "=", storeKey)
-        .limit(1),
-    ).rows[0]?.store_epoch ?? 0
-  );
-}
-
-/** Current runtime-only revision for one cron partition. */
-export function readCronRuntimeRevision(
-  db: DatabaseSync,
-  storeKey: string,
-  options?: { ensureSchema?: boolean },
-): number {
-  return readCronStoreEpoch(db, cronRuntimeRevisionKey(storeKey), options);
-}
-
-function writeCronStoreEpoch(db: DatabaseSync, storeKey: string, storeEpoch: number): void {
-  ensureCronStoreEpochSchema(db);
-  executeSqliteQuerySync(
-    db,
-    getCronStoreKysely(db)
-      .insertInto("cron_store_epochs")
-      .values({ store_key: storeKey, store_epoch: storeEpoch })
-      .onConflict((conflict) =>
-        conflict.column("store_key").doUpdateSet({ store_epoch: storeEpoch }),
-      ),
-  );
-}
-
-/** Advances the topology epoch for one cron store partition. */
-export function incrementCronStoreEpoch(db: DatabaseSync, storeKey: string): number {
-  ensureCronStoreEpochSchema(db);
-  executeSqliteQuerySync(
-    db,
-    getCronStoreKysely(db)
-      .insertInto("cron_store_epochs")
-      .values({ store_key: storeKey, store_epoch: 0 })
-      .onConflict((conflict) => conflict.column("store_key").doNothing()),
-  );
-  const row = executeSqliteQuerySync(
-    db,
-    getCronStoreKysely(db)
-      .updateTable("cron_store_epochs")
-      .set((eb) => ({ store_epoch: eb("store_epoch", "+", 1) }))
-      .where("store_key", "=", storeKey)
-      .returning("store_epoch"),
-  ).rows[0];
-  if (!row) {
-    throw new Error(`failed to advance cron store epoch for ${storeKey}`);
-  }
-  return row.store_epoch;
-}
-
-function incrementCronRuntimeRevision(db: DatabaseSync, storeKey: string): number {
-  return incrementCronStoreEpoch(db, cronRuntimeRevisionKey(storeKey));
-}
-
-export class CronStoreEpochMismatchError extends Error {
-  readonly expectedEpoch: number;
-  readonly actualEpoch: number;
-
-  constructor(expectedEpoch: number, actualEpoch: number) {
-    super(`cron store epoch changed from ${expectedEpoch} to ${actualEpoch}`);
-    this.name = "CronStoreEpochMismatchError";
-    this.expectedEpoch = expectedEpoch;
-    this.actualEpoch = actualEpoch;
-  }
-}
-
-export class CronRuntimeRevisionMismatchError extends Error {
-  readonly expectedRevision: number;
-  readonly actualRevision: number;
-
-  constructor(expectedRevision: number, actualRevision: number) {
-    super(`cron runtime revision changed from ${expectedRevision} to ${actualRevision}`);
-    this.name = "CronRuntimeRevisionMismatchError";
-    this.expectedRevision = expectedRevision;
-    this.actualRevision = actualRevision;
-  }
-}
-
-export class CronStoreTopologyMismatchError extends Error {
-  constructor() {
-    super("cron store topology changed without advancing its epoch");
-    this.name = "CronStoreTopologyMismatchError";
-  }
-}
-
-/** Fingerprints all persisted topology, including order, while excluding mutable runtime columns. */
-function cronRowTopologyFingerprint(row: CronJobRow): string {
-  const {
-    store_key: _storeKey,
-    updated_at: _updatedAt,
-    next_run_at_ms: _nextRunAtMs,
-    running_at_ms: _runningAtMs,
-    last_run_at_ms: _lastRunAtMs,
-    last_run_status: _lastRunStatus,
-    last_error: _lastError,
-    last_duration_ms: _lastDurationMs,
-    consecutive_errors: _consecutiveErrors,
-    consecutive_skipped: _consecutiveSkipped,
-    schedule_error_count: _scheduleErrorCount,
-    last_delivery_status: _lastDeliveryStatus,
-    last_delivery_error: _lastDeliveryError,
-    last_delivered: _lastDelivered,
-    last_failure_alert_at_ms: _lastFailureAlertAtMs,
-    state_json: _stateJson,
-    runtime_updated_at_ms: _runtimeUpdatedAtMs,
-    schedule_identity: _scheduleIdentity,
-    ...topologyRow
-  } = row;
-  const jobJson = parseJsonObject<Record<string, unknown>>(row.job_json, {});
-  delete jobJson.state;
-  delete jobJson.updatedAtMs;
-  return stableStringify({ ...topologyRow, job_json: jobJson });
-}
-
-function cronJobTopologyProjection(job: CronJob): Record<string, unknown> {
-  const projected = stripJobRuntimeFields(job);
-  if (job.schedule.kind === "every" && job.schedule.anchorMs === undefined) {
-    projected.schedule = { ...job.schedule, anchorMs: job.createdAtMs };
-  }
-  return projected;
-}
-
-function cronRowTopologyMatches(row: CronJobRow, job: CronJob): boolean {
-  const loaded = loadedCronStoreFromRows([row]);
-  const currentJob = loaded.store.jobs[0];
-  const currentConfigJob = loaded.configJobs[0];
-  const normalizedCurrent = currentJob ? normalizeCronJobForSqlite(currentJob) : null;
-  const normalizedCurrentConfig = currentConfigJob
-    ? normalizeCronJobForSqlite(currentConfigJob as CronJob)
-    : null;
-  return Boolean(
-    normalizedCurrent &&
-    normalizedCurrentConfig &&
-    normalizedCurrent.id === job.id &&
-    isDeepStrictEqual(
-      cronJobTopologyProjection(normalizedCurrent),
-      cronJobTopologyProjection(job),
-    ) &&
-    isDeepStrictEqual(
-      cronJobTopologyProjection(normalizedCurrentConfig),
-      cronJobTopologyProjection(job),
-    ),
-  );
-}
-
-function cronStoreTopologyMatches(rows: CronJobRow[], store: CronStoreFile): boolean {
-  if (rows.length !== store.jobs.length) {
-    return false;
-  }
-  return store.jobs.every((job, index) => {
-    const row = rows[index];
-    const normalized = normalizeCronJobForSqlite(job);
-    return Boolean(row && normalized && cronRowTopologyMatches(row, normalized));
-  });
-}
-
 /** Materializes retired default ownership without rewriting unrelated cron row fields.
  * The caller owns the shared-state write transaction so row and epoch updates commit together. */
 export function materializeCronRowAgentOwners(
@@ -685,7 +525,15 @@ export function replaceCronRows(
       currentRuntimeRevision,
     );
   }
-  const topologyChanged = !cronStoreTopologyMatches(currentRows, store);
+  const topologyChanged = !cronStoreTopologyMatches({
+    rows: currentRows,
+    store,
+    normalizeJob: normalizeCronJobForSqlite,
+    loadRow: (row) => {
+      const loaded = loadedCronStoreFromRows([row]);
+      return { job: loaded.store.jobs[0], configJob: loaded.configJobs[0] };
+    },
+  });
   const nextStoreEpoch =
     options?.bumpStoreEpoch && topologyChanged
       ? incrementCronStoreEpoch(db, storeKey)

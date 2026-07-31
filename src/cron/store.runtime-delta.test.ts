@@ -113,7 +113,7 @@ describe("cron state-only runtime deltas", () => {
         expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
       }),
     ).rejects.toBeInstanceOf(CronRuntimeRevisionMismatchError);
-    expect(
+    await expect(
       loadCronJobsStoreWithConfigJobs(storePath).then(
         (current) => current.configJobRuntimeEntries[0]?.scheduleIdentity,
       ),

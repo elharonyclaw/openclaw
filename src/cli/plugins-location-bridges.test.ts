@@ -202,6 +202,38 @@ describe("listPersistedBundledPluginLocationBridges", () => {
     },
   );
 
+  it("externalizes a persisted bundled NovitaAI provider while preserving default enablement", async () => {
+    readPersistedInstalledPluginIndexMock.mockResolvedValue(
+      makeIndex({
+        pluginId: "novita",
+        manifestPath: "/app/dist/extensions/novita/openclaw.plugin.json",
+        manifestHash: "hash",
+        source: "/app/dist/extensions/novita/index.js",
+        rootDir: "/app/dist/extensions/novita",
+        origin: "bundled",
+        enabled: true,
+        enabledByDefault: true,
+        startup: startupInfo,
+        compat: [],
+        packageInstall: {
+          warnings: [],
+        },
+      }),
+    );
+    loadPluginManifestRegistryForInstalledIndexMock.mockReturnValue(makeRegistry("novita", []));
+
+    await expect(listPersistedBundledPluginLocationBridges({})).resolves.toEqual([
+      {
+        bundledPluginId: "novita",
+        pluginId: "novita",
+        preferredSource: "npm",
+        npmSpec: "@openclaw/novita-provider",
+        clawhubSpec: "clawhub:@openclaw/novita-provider",
+        enabledByDefault: true,
+      },
+    ]);
+  });
+
   it("does not create a relocation bridge without persisted or official install metadata", async () => {
     readPersistedInstalledPluginIndexMock.mockResolvedValue(
       makeIndex({

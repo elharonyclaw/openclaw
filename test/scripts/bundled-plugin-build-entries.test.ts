@@ -359,6 +359,14 @@ describe("bundled plugin build entries", () => {
     }
   });
 
+  it("excludes the externalized NovitaAI provider from bundled artifacts", () => {
+    const artifacts = listBundledPluginPackArtifacts();
+
+    expect(artifacts).not.toContain("dist/extensions/novita/index.js");
+    expect(artifacts).not.toContain("dist/extensions/novita/openclaw.plugin.json");
+    expect(artifacts).not.toContain("dist/extensions/novita/package.json");
+  });
+
   it("keeps bundled channel secret contracts on packed top-level sidecars", () => {
     const artifacts = listBundledPluginPackArtifacts();
     const excludedPackageDirs = collectRootPackageExcludedExtensionDirs();

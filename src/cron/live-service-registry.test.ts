@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { GatewayCronServiceContract } from "../gateway/server-cron-contract.js";
+import { makeCronJob } from "./delivery.test-helpers.js";
 import {
   beginLegacyDefaultOwnerHandoff,
+  type LiveCronOwnerMigration,
   registerLiveCronService,
 } from "./live-service-registry.js";
 import { CronService } from "./service.js";
+import { loadCronJobsStoreWithConfigJobs, saveCronStore } from "./store.js";
 
 function createDeferred() {
   let resolve = () => {};
@@ -14,6 +18,13 @@ function createDeferred() {
 }
 
 describe("live cron ownership handoff", () => {
+  it("keeps the real service signatures aligned with live and Gateway contracts", () => {
+    expectTypeOf<CronService>().toMatchTypeOf<GatewayCronServiceContract>();
+    expectTypeOf<CronService["beginLegacyDefaultAgentOwnerHandoff"]>().toEqualTypeOf<
+      LiveCronOwnerMigration["beginLegacyDefaultAgentOwnerHandoff"]
+    >();
+  });
+
   it("locks existing services and blocks later starters until release", async () => {
     const storePath = `/tmp/openclaw-live-cron-${Date.now()}.json`;
     const lockAcquired = createDeferred();
@@ -175,5 +186,44 @@ describe("live cron ownership handoff", () => {
     expect(beginSpy).toHaveBeenCalledOnce();
     verificationHandoff.release();
     cron.stop();
+  });
+
+  it("forwards commit-fence callbacks through a real service leader", async () => {
+    const storePath = `/tmp/openclaw-live-cron-fence-${Date.now()}.json`;
+    await saveCronStore(storePath, {
+      version: 1,
+      jobs: [makeCronJob({ id: "ownerless-fenced-job" })],
+    });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const beforeMigration = vi.fn(async () => {});
+    const expectedStoreEpoch = vi.fn(() => loaded.storeEpoch);
+    const recordCommittedStoreEpoch = vi.fn();
+    const cron = new CronService({
+      storePath,
+      cronEnabled: true,
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    await cron.start();
+    const handoff = beginLegacyDefaultOwnerHandoff({
+      storePath,
+      legacyDefaultAgentId: "ops",
+      beforeMigration,
+      expectedStoreEpoch,
+      recordCommittedStoreEpoch,
+    });
+    try {
+      await handoff.drainAndSeal();
+      expect(beforeMigration).toHaveBeenCalledOnce();
+      expect(expectedStoreEpoch).toHaveBeenCalled();
+      expect(recordCommittedStoreEpoch).toHaveBeenCalledOnce();
+      expect((await loadCronJobsStoreWithConfigJobs(storePath)).store.jobs[0]?.agentId).toBe("ops");
+    } finally {
+      handoff.release();
+      cron.stop();
+    }
   });
 });

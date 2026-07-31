@@ -13,6 +13,7 @@ export function writeCronRuntimeRowDeltas(params: {
   expectedRuntimeRevision?: number;
   currentRuntimeRevision?: number;
   expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
+  expectedRuntimeUpdatedAtMsByJobId?: ReadonlyMap<string, number>;
   conflictError: () => Error;
   incrementRevision: () => number;
 }): number {
@@ -43,8 +44,9 @@ export function writeCronRuntimeRowDeltas(params: {
   for (const job of mergedStore.jobs) {
     if (revisionChanged) {
       const current = currentStates?.get(job.id);
-      const hasExpected = params.expectedRuntimeStateByJobId?.has(job.id) === true;
-      if (!current || !hasExpected) {
+      const hasExpectedState = params.expectedRuntimeStateByJobId?.has(job.id) === true;
+      const hasExpectedUpdatedAtMs = params.expectedRuntimeUpdatedAtMsByJobId?.has(job.id) === true;
+      if (!current || !hasExpectedState || !hasExpectedUpdatedAtMs) {
         throw params.conflictError();
       }
       const expected = params.expectedRuntimeStateByJobId?.get(job.id) ?? {};
@@ -52,6 +54,9 @@ export function writeCronRuntimeRowDeltas(params: {
         current: current.state,
         next: job.state ?? {},
         expected,
+        currentUpdatedAtMs: current.updatedAtMs,
+        nextUpdatedAtMs: job.updatedAtMs,
+        expectedUpdatedAtMs: params.expectedRuntimeUpdatedAtMsByJobId!.get(job.id)!,
       });
       if (resolution === "conflict") {
         throw params.conflictError();
@@ -64,6 +69,10 @@ export function writeCronRuntimeRowDeltas(params: {
         continue;
       }
     }
+  }
+  // Resolve every job before the first row write. Direct callers therefore cannot
+  // persist an early delta when a later job proves the snapshot is conflicting.
+  for (const job of mergedStore.jobs) {
     executeSqliteQuerySync(
       params.db,
       getCronStoreKysely(params.db)

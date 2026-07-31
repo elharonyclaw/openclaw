@@ -9,13 +9,24 @@ export function resolveCronRuntimeDelta(params: {
   current: CronJob["state"];
   next: CronJob["state"];
   expected: CronJob["state"];
+  currentUpdatedAtMs: number;
+  nextUpdatedAtMs: number;
+  expectedUpdatedAtMs: number;
 }): CronRuntimeDeltaResolution {
-  const currentChanged = !isDeepStrictEqual(params.current, params.expected);
-  const nextChanged = !isDeepStrictEqual(params.next, params.expected);
+  const currentChanged =
+    !isDeepStrictEqual(params.current, params.expected) ||
+    params.currentUpdatedAtMs !== params.expectedUpdatedAtMs;
+  const nextChanged =
+    !isDeepStrictEqual(params.next, params.expected) ||
+    params.nextUpdatedAtMs !== params.expectedUpdatedAtMs;
   if (!currentChanged) {
     return "write";
   }
-  if (!nextChanged || isDeepStrictEqual(params.current, params.next)) {
+  if (
+    !nextChanged ||
+    (isDeepStrictEqual(params.current, params.next) &&
+      params.currentUpdatedAtMs === params.nextUpdatedAtMs)
+  ) {
     return "preserve";
   }
   return "conflict";

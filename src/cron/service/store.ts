@@ -28,10 +28,15 @@ export type CronRollbackSnapshot = {
   runtimeRevision: number;
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
   durableRuntimeStateByJobId: Map<string, CronJob["state"]>;
+  durableRuntimeUpdatedAtMsByJobId: Map<string, number>;
 };
 
 function snapshotRuntimeStateByJobId(jobs: CronJob[]): Map<string, CronJob["state"]> {
   return new Map(jobs.map((job) => [job.id, structuredClone(job.state ?? {})]));
+}
+
+function snapshotRuntimeUpdatedAtMsByJobId(jobs: CronJob[]): Map<string, number> {
+  return new Map(jobs.map((job) => [job.id, job.updatedAtMs]));
 }
 
 function durableNextRunsFromJobs(jobs: readonly CronJob[]) {
@@ -209,6 +214,7 @@ export async function ensureLoaded(
   const legacyImportedJobIds = new Set<string>();
   const durableNextRunAtMsByJobId = new Map<string, number | undefined>();
   const durableRuntimeStateByJobId = new Map<string, CronJob["state"]>();
+  const durableRuntimeUpdatedAtMsByJobId = new Map<string, number>();
   const quarantinedConfigJobs: QuarantinedCronConfigJob[] = [...loaded.invalidConfigRows];
   for (const [index, raw] of loadedJobs.entries()) {
     const rawConfigJob = loaded.configJobs[index] ?? structuredClone(raw);
@@ -265,6 +271,7 @@ export async function ensureLoaded(
     // mutates the runtime view. A later save can then publish that transition.
     durableNextRunAtMsByJobId.set(hydrated.id, hydrated.state.nextRunAtMs);
     durableRuntimeStateByJobId.set(hydrated.id, structuredClone(hydrated.state ?? {}));
+    durableRuntimeUpdatedAtMsByJobId.set(hydrated.id, hydrated.updatedAtMs);
     invalidateStaleNextRunOnScheduleChange({ previousJobsById, hydrated });
   }
   state.store = {
@@ -276,6 +283,7 @@ export async function ensureLoaded(
   state.legacyImportedJobIds = legacyImportedJobIds;
   state.durableNextRunAtMsByJobId = durableNextRunAtMsByJobId;
   state.durableRuntimeStateByJobId = durableRuntimeStateByJobId;
+  state.durableRuntimeUpdatedAtMsByJobId = durableRuntimeUpdatedAtMsByJobId;
   state.storeLoadedAtMs = state.deps.nowMs();
 
   if (quarantinedConfigJobs.length > 0) {
@@ -350,6 +358,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
             expectedStoreEpoch: state.storeEpoch,
             expectedRuntimeRevision: state.runtimeRevision,
             expectedRuntimeStateByJobId: state.durableRuntimeStateByJobId,
+            expectedRuntimeUpdatedAtMsByJobId: state.durableRuntimeUpdatedAtMsByJobId,
             env: state.deps.env,
           }
         : {
@@ -367,6 +376,9 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
       persistedStore = mergeCommittedCronStoreIntoLive(store, committed.store);
       state.store = persistedStore;
       state.durableRuntimeStateByJobId = snapshotRuntimeStateByJobId(committed.store.jobs);
+      state.durableRuntimeUpdatedAtMsByJobId = snapshotRuntimeUpdatedAtMsByJobId(
+        committed.store.jobs,
+      );
     }
   } catch (error) {
     if (
@@ -384,6 +396,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
             expectedStoreEpoch: state.storeEpoch,
             expectedRuntimeRevision: state.runtimeRevision,
             expectedRuntimeStateByJobId: state.durableRuntimeStateByJobId,
+            expectedRuntimeUpdatedAtMsByJobId: state.durableRuntimeUpdatedAtMsByJobId,
             env: state.deps.env,
           });
           if (repaired) {
@@ -394,6 +407,9 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
               : state.store;
             state.store = repairedStore;
             state.durableRuntimeStateByJobId = snapshotRuntimeStateByJobId(repaired.store.jobs);
+            state.durableRuntimeUpdatedAtMsByJobId = snapshotRuntimeUpdatedAtMsByJobId(
+              repaired.store.jobs,
+            );
             publishDurableNextRunChanges({
               state,
               storeJobs: repairedStore.jobs,
@@ -416,6 +432,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
         }
         state.durableNextRunAtMsByJobId = new Map();
         state.durableRuntimeStateByJobId = new Map();
+        state.durableRuntimeUpdatedAtMsByJobId = new Map();
         state.deps.log.warn(
           {
             storePath: state.deps.storePath,
@@ -449,6 +466,7 @@ export function snapshotStoreForRollback(state: CronServiceState): CronRollbackS
         structuredClone(runtimeState),
       ]),
     ),
+    durableRuntimeUpdatedAtMsByJobId: new Map(state.durableRuntimeUpdatedAtMsByJobId),
   };
 }
 
@@ -482,6 +500,7 @@ export async function persistOrRestore(
       state.runtimeRevision = snapshot.runtimeRevision;
       state.durableNextRunAtMsByJobId = snapshot.durableNextRunAtMsByJobId;
       state.durableRuntimeStateByJobId = snapshot.durableRuntimeStateByJobId;
+      state.durableRuntimeUpdatedAtMsByJobId = snapshot.durableRuntimeUpdatedAtMsByJobId;
     }
     throw err;
   }

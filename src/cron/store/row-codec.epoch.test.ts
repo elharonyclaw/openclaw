@@ -326,6 +326,72 @@ describe("cron store epoch", () => {
     }
   });
 
+  it("rolls back an early direct runtime write when a later job conflicts", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-runtime-conflict-"));
+    const handle = openOpenClawStateDatabase({ path: path.join(root, "state.sqlite") });
+    const database = handle.db;
+    const storeKey = "runtime-direct-conflict";
+    const first = makeCronJob({ id: "runtime-first" });
+    const second = makeCronJob({ id: "runtime-second" });
+    try {
+      replaceCronRows(database, storeKey, { version: 1, jobs: [first, second] });
+      const expectedRuntimeRevision = readCronRuntimeRevision(database, storeKey);
+      const expectedRuntimeStateByJobId = new Map(
+        [first, second].map((job) => [job.id, structuredClone(job.state)]),
+      );
+      const expectedRuntimeUpdatedAtMsByJobId = new Map(
+        [first, second].map((job) => [job.id, job.updatedAtMs]),
+      );
+      updateCronRuntimeRows(database, storeKey, {
+        version: 1,
+        jobs: [
+          first,
+          {
+            ...second,
+            updatedAtMs: second.updatedAtMs + 202,
+            state: { nextRunAtMs: second.updatedAtMs + 202 },
+          },
+        ],
+      });
+      const currentRuntimeRevision = readCronRuntimeRevision(database, storeKey);
+      const rowsBefore = loadCronRows(database, storeKey);
+
+      expect(() =>
+        updateCronRuntimeRows(
+          database,
+          storeKey,
+          {
+            version: 1,
+            jobs: [
+              {
+                ...first,
+                updatedAtMs: first.updatedAtMs + 101,
+                state: { nextRunAtMs: first.updatedAtMs + 101 },
+              },
+              {
+                ...second,
+                updatedAtMs: second.updatedAtMs + 404,
+                state: { nextRunAtMs: second.updatedAtMs + 404 },
+              },
+            ],
+          },
+          {
+            expectedRuntimeRevision,
+            currentRuntimeRevision,
+            expectedRuntimeStateByJobId,
+            expectedRuntimeUpdatedAtMsByJobId,
+          },
+        ),
+      ).toThrow(CronRuntimeRevisionMismatchError);
+      expect(loadCronRows(database, storeKey)).toEqual(rowsBefore);
+      expect(readCronRuntimeRevision(database, storeKey)).toBe(currentRuntimeRevision);
+    } finally {
+      handle.walMaintenance.close();
+      database.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back the row upsert when its runtime revision cannot advance", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-upsert-atomic-"));
     const handle = openOpenClawStateDatabase({ path: path.join(root, "state.sqlite") });

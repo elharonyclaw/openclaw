@@ -50,13 +50,13 @@ export type SetupInferenceTestPlan = {
   };
 };
 
-/** Carries an explicit route only when the authored roster is canonical and ambiguous. */
+/** Carries an explicit route whenever either supported authored roster is ambiguous. */
 export function resolveSetupModelSelectionTargetAgentId(
   config: OpenClawConfig,
   routeAgentId?: string,
 ): string | undefined {
   const roster = readAgentRosterProperty(config);
-  return routeAgentId && roster?.kind === "entries" && listAgentEntries(config).length > 1
+  return routeAgentId && roster && listAgentEntries(config).length > 1
     ? normalizeAgentId(routeAgentId)
     : undefined;
 }

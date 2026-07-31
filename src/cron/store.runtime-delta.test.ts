@@ -28,9 +28,12 @@ function job(id: string): CronJob {
 }
 
 function runtimeBaseline(store: CronStoreFile) {
-  return new Map<string, CronJob["state"] | undefined>(
-    store.jobs.map((entry) => [entry.id, structuredClone(entry.state ?? {})]),
-  );
+  return {
+    states: new Map<string, CronJob["state"] | undefined>(
+      store.jobs.map((entry) => [entry.id, structuredClone(entry.state ?? {})]),
+    ),
+    updatedAtMs: new Map(store.jobs.map((entry) => [entry.id, entry.updatedAtMs])),
+  };
 }
 
 describe("cron state-only runtime deltas", () => {
@@ -50,7 +53,8 @@ describe("cron state-only runtime deltas", () => {
         stateOnly: true,
         expectedStoreEpoch: loaded.storeEpoch,
         expectedRuntimeRevision: loaded.runtimeRevision,
-        expectedRuntimeStateByJobId: baseline,
+        expectedRuntimeStateByJobId: baseline.states,
+        expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
       });
     }
     expect(writerB.jobs[0]?.state.nextRunAtMs).toBe(101);
@@ -69,14 +73,16 @@ describe("cron state-only runtime deltas", () => {
       stateOnly: true,
       expectedStoreEpoch: conflictBase.storeEpoch,
       expectedRuntimeRevision: conflictBase.runtimeRevision,
-      expectedRuntimeStateByJobId: conflictBaseline,
+      expectedRuntimeStateByJobId: conflictBaseline.states,
+      expectedRuntimeUpdatedAtMsByJobId: conflictBaseline.updatedAtMs,
     });
     await expect(
       saveCronJobsStore(storePath, stale, {
         stateOnly: true,
         expectedStoreEpoch: conflictBase.storeEpoch,
         expectedRuntimeRevision: conflictBase.runtimeRevision,
-        expectedRuntimeStateByJobId: conflictBaseline,
+        expectedRuntimeStateByJobId: conflictBaseline.states,
+        expectedRuntimeUpdatedAtMsByJobId: conflictBaseline.updatedAtMs,
       }),
     ).rejects.toBeInstanceOf(CronRuntimeRevisionMismatchError);
   });
@@ -86,7 +92,7 @@ describe("cron state-only runtime deltas", () => {
     await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });
     const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
     const baseline = runtimeBaseline(loaded.store);
-    baseline.set("runtime-a", undefined);
+    baseline.states.set("runtime-a", undefined);
     const concurrent = structuredClone(loaded.store);
     const stale = structuredClone(loaded.store);
     concurrent.jobs[1]!.state = { nextRunAtMs: 202 };
@@ -95,14 +101,16 @@ describe("cron state-only runtime deltas", () => {
       stateOnly: true,
       expectedStoreEpoch: loaded.storeEpoch,
       expectedRuntimeRevision: loaded.runtimeRevision,
-      expectedRuntimeStateByJobId: baseline,
+      expectedRuntimeStateByJobId: baseline.states,
+      expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
     });
     await expect(
       saveCronJobsStore(storePath, stale, {
         stateOnly: true,
         expectedStoreEpoch: loaded.storeEpoch,
         expectedRuntimeRevision: loaded.runtimeRevision,
-        expectedRuntimeStateByJobId: baseline,
+        expectedRuntimeStateByJobId: baseline.states,
+        expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
       }),
     ).resolves.toBeDefined();
   });
@@ -122,7 +130,8 @@ describe("cron state-only runtime deltas", () => {
       stateOnly: true,
       expectedStoreEpoch: loaded.storeEpoch,
       expectedRuntimeRevision: loaded.runtimeRevision,
-      expectedRuntimeStateByJobId: baseline,
+      expectedRuntimeStateByJobId: baseline.states,
+      expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
     });
     const staleBeforeSave = structuredClone(stale);
     await expect(
@@ -130,13 +139,47 @@ describe("cron state-only runtime deltas", () => {
         stateOnly: true,
         expectedStoreEpoch: loaded.storeEpoch,
         expectedRuntimeRevision: loaded.runtimeRevision,
-        expectedRuntimeStateByJobId: baseline,
+        expectedRuntimeStateByJobId: baseline.states,
+        expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
       }),
     ).rejects.toBeInstanceOf(CronRuntimeRevisionMismatchError);
 
     expect(stale).toEqual(staleBeforeSave);
     expect((await loadCronStore(storePath)).jobs.map((entry) => entry.state.nextRunAtMs)).toEqual([
       101, 202,
+    ]);
+  });
+
+  it("preserves a concurrent timestamp-only advance on an unchanged sibling", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const baseline = runtimeBaseline(loaded.store);
+    const timestampWriter = structuredClone(loaded.store);
+    const siblingWriter = structuredClone(loaded.store);
+    timestampWriter.jobs[0]!.updatedAtMs = NOW + 101;
+    siblingWriter.jobs[1]!.state = { nextRunAtMs: 202 };
+    siblingWriter.jobs[1]!.updatedAtMs = NOW + 202;
+
+    await saveCronJobsStore(storePath, timestampWriter, {
+      stateOnly: true,
+      expectedStoreEpoch: loaded.storeEpoch,
+      expectedRuntimeRevision: loaded.runtimeRevision,
+      expectedRuntimeStateByJobId: baseline.states,
+      expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
+    });
+    await saveCronJobsStore(storePath, siblingWriter, {
+      stateOnly: true,
+      expectedStoreEpoch: loaded.storeEpoch,
+      expectedRuntimeRevision: loaded.runtimeRevision,
+      expectedRuntimeStateByJobId: baseline.states,
+      expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
+    });
+
+    expect(siblingWriter.jobs[0]?.updatedAtMs).toBe(NOW + 101);
+    expect((await loadCronStore(storePath)).jobs.map((entry) => entry.updatedAtMs)).toEqual([
+      NOW + 101,
+      NOW + 202,
     ]);
   });
 });

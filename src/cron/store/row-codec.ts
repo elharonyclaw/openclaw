@@ -699,24 +699,28 @@ export function updateCronRuntimeRows(
     expectedRuntimeRevision?: number;
     currentRuntimeRevision?: number;
     expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
+    expectedRuntimeUpdatedAtMsByJobId?: ReadonlyMap<string, number>;
   },
 ): number {
   const expectedRuntimeRevision = options?.expectedRuntimeRevision;
   const currentRuntimeRevision = options?.currentRuntimeRevision;
-  return writeCronRuntimeRowDeltas({
-    db,
-    storeKey,
-    store,
-    expectedRuntimeRevision,
-    currentRuntimeRevision,
-    expectedRuntimeStateByJobId: options?.expectedRuntimeStateByJobId,
-    conflictError: () =>
-      new CronRuntimeRevisionMismatchError(
-        expectedRuntimeRevision ?? 0,
-        currentRuntimeRevision ?? 0,
-      ),
-    incrementRevision: () => incrementCronRuntimeRevision(db, storeKey),
-  });
+  const write = () =>
+    writeCronRuntimeRowDeltas({
+      db,
+      storeKey,
+      store,
+      expectedRuntimeRevision,
+      currentRuntimeRevision,
+      expectedRuntimeStateByJobId: options?.expectedRuntimeStateByJobId,
+      expectedRuntimeUpdatedAtMsByJobId: options?.expectedRuntimeUpdatedAtMsByJobId,
+      conflictError: () =>
+        new CronRuntimeRevisionMismatchError(
+          expectedRuntimeRevision ?? 0,
+          currentRuntimeRevision ?? 0,
+        ),
+      incrementRevision: () => incrementCronRuntimeRevision(db, storeKey),
+    });
+  return db.isTransaction ? write() : runSqliteDeferredTransactionSync(db, write);
 }
 
 /** Reconstructs loaded cron store data and config-runtime sidecars from SQLite rows. */

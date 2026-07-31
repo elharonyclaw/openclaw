@@ -195,6 +195,8 @@ type SaveCronStoreOptions = {
   expectedRuntimeRevision?: number;
   /** Per-job runtime baseline for distinguishing stale siblings from intentional writes. */
   expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
+  /** Per-job runtime timestamp baseline paired with expectedRuntimeStateByJobId. */
+  expectedRuntimeUpdatedAtMsByJobId?: ReadonlyMap<string, number>;
   /** Advance the epoch when an ownership migration changes topology meaning. */
   bumpStoreEpoch?: boolean;
 };
@@ -243,6 +245,7 @@ export async function saveCronJobsStore(
           expectedRuntimeRevision: opts.expectedRuntimeRevision,
           currentRuntimeRevision: runtimeRevision,
           expectedRuntimeStateByJobId: opts.expectedRuntimeStateByJobId,
+          expectedRuntimeUpdatedAtMsByJobId: opts.expectedRuntimeUpdatedAtMsByJobId,
         });
         return {
           storeEpoch,

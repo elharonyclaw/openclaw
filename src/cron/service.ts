@@ -1,6 +1,10 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 /** Stateful CronService facade around the locked service operation helpers. */
-import { registerLiveCronService } from "./live-service-registry.js";
+import {
+  type LegacyDefaultCronOwnerHandoffOptions,
+  type LiveCronOwnerMigration,
+  registerLiveCronService,
+} from "./live-service-registry.js";
 import type {
   CronServiceContract,
   CronServiceRunOptions,
@@ -25,7 +29,7 @@ import type { CronJob, CronJobCreate, CronJobPatch } from "./types.js";
 export type { CronEvent } from "./service/state.js";
 
 /** Public cron service facade that owns mutable scheduler state and delegates to locked ops. */
-export class CronService implements CronServiceContract {
+export class CronService implements CronServiceContract, LiveCronOwnerMigration {
   stopAndDrain?: () => Promise<void>;
   private readonly state;
   private startInProgress = 0;
@@ -108,8 +112,15 @@ export class CronService implements CronServiceContract {
     this.liveServiceRegistration = null;
   }
 
-  async beginLegacyDefaultAgentOwnerHandoff(legacyDefaultAgentId: string) {
-    return await lifecycleOps.beginLegacyDefaultAgentOwnerHandoff(this.state, legacyDefaultAgentId);
+  async beginLegacyDefaultAgentOwnerHandoff(
+    legacyDefaultAgentId: string,
+    options?: LegacyDefaultCronOwnerHandoffOptions,
+  ) {
+    return await lifecycleOps.beginLegacyDefaultAgentOwnerHandoff(
+      this.state,
+      legacyDefaultAgentId,
+      options,
+    );
   }
 
   async refreshLegacyDefaultAgentOwnerHandoff(options?: { persistSchedulingState?: boolean }) {

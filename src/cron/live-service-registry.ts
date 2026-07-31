@@ -1,14 +1,16 @@
 import path from "node:path";
 import type { LegacyDefaultCronOwnerMigrationResult } from "./legacy-default-agent-owner-migration.js";
 
-type LiveCronOwnerMigration = {
+export type LegacyDefaultCronOwnerHandoffOptions = {
+  beforeMigration?: () => Promise<void>;
+  expectedStoreEpoch?: () => number | undefined;
+  recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+};
+
+export type LiveCronOwnerMigration = {
   beginLegacyDefaultAgentOwnerHandoff: (
     legacyDefaultAgentId: string,
-    options?: {
-      beforeMigration?: () => Promise<void>;
-      expectedStoreEpoch?: () => number | undefined;
-      recordCommittedStoreEpoch?: (storeEpoch: number) => void;
-    },
+    options?: LegacyDefaultCronOwnerHandoffOptions,
   ) => Promise<{
     migration: LegacyDefaultCronOwnerMigrationResult;
     release: () => void;
@@ -69,13 +71,12 @@ type LiveCronOwnerHandoff = {
 };
 
 /** Locks every already-live service until the config commit settles. */
-export function beginLegacyDefaultOwnerHandoff(params: {
-  storePath: string;
-  legacyDefaultAgentId: string;
-  beforeMigration?: () => Promise<void>;
-  expectedStoreEpoch?: () => number | undefined;
-  recordCommittedStoreEpoch?: (storeEpoch: number) => void;
-}): LiveCronOwnerHandoff {
+export function beginLegacyDefaultOwnerHandoff(
+  params: {
+    storePath: string;
+    legacyDefaultAgentId: string;
+  } & LegacyDefaultCronOwnerHandoffOptions,
+): LiveCronOwnerHandoff {
   const key = path.resolve(params.storePath);
   const state = getLiveStore(key);
   if (state.handoff) {

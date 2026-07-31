@@ -180,11 +180,18 @@ export async function writeConfigFileFromContext(
       agents: { ...nextConfig.agents, ownership: "explicit" },
     };
   }
-  const workspacePin = previousSoleHandoffAgentId
+  const retainedFleetOwner =
+    retainedLegacyDefaultAgentId &&
+    writesOwnershipTopology &&
+    nextAgentIds.has(normalizeAgentId(retainedLegacyDefaultAgentId))
+      ? retainedLegacyDefaultAgentId
+      : undefined;
+  const roleMaterializationAgentId = previousSoleHandoffAgentId ?? retainedFleetOwner;
+  const workspacePin = roleMaterializationAgentId
     ? pinSoleAgentWorkspaceForFleetExpansion({
         sourceConfig: snapshot.config,
         targetConfig: nextConfig,
-        agentId: previousSoleHandoffAgentId,
+        agentId: roleMaterializationAgentId,
         env: deps.env,
       })
     : { config: nextConfig, insertedPaths: [] as string[][] };
@@ -193,11 +200,13 @@ export async function writeConfigFileFromContext(
     ...workspacePin.insertedPaths,
     ...(shouldStampOwnershipGeneration ? [["agents", "ownership"]] : []),
   ];
-  if (previousSoleHandoffAgentId) {
+  if (roleMaterializationAgentId) {
     const materialized = materializeLegacyAgentOwnershipForActiveChannelsResult(
       nextConfig,
-      previousSoleHandoffAgentId,
+      roleMaterializationAgentId,
       deps.env,
+      undefined,
+      { materializeWorkspace: true },
     );
     nextConfig = materialized.config;
     transitionInsertedPaths = [...transitionInsertedPaths, ...materialized.insertedPaths];

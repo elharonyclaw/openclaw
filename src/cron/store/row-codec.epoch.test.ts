@@ -287,6 +287,45 @@ describe("cron store epoch", () => {
     }
   });
 
+  it("preserves a timestamp-only runtime advance across a stale full replacement", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-runtime-timestamp-"));
+    const handle = openOpenClawStateDatabase({ path: path.join(root, "state.sqlite") });
+    const database = handle.db;
+    const storeKey = "runtime-timestamp";
+    const job = makeCronJob({ id: "runtime-timestamp-job" });
+    try {
+      replaceCronRows(database, storeKey, { version: 1, jobs: [job] }, { bumpStoreEpoch: true });
+      const epoch = readCronStoreEpoch(database, storeKey);
+      const runtimeRevision = readCronRuntimeRevision(database, storeKey);
+      const runtimeBaseline = new Map([[job.id, structuredClone(job.state)]]);
+      const advancedUpdatedAtMs = job.updatedAtMs + 60_000;
+      updateCronRuntimeRows(database, storeKey, {
+        version: 1,
+        jobs: [{ ...job, updatedAtMs: advancedUpdatedAtMs }],
+      });
+
+      replaceCronRows(
+        database,
+        storeKey,
+        { version: 1, jobs: [{ ...job, name: "renamed after runtime update" }] },
+        {
+          expectedStoreEpoch: epoch,
+          expectedRuntimeRevision: runtimeRevision,
+          expectedRuntimeStateByJobId: runtimeBaseline,
+          bumpStoreEpoch: true,
+        },
+      );
+
+      const persisted = loadedCronStoreFromRows(loadCronRows(database, storeKey)).store.jobs[0];
+      expect(persisted?.name).toBe("renamed after runtime update");
+      expect(persisted?.updatedAtMs).toBe(advancedUpdatedAtMs);
+    } finally {
+      handle.walMaintenance.close();
+      database.close();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a stale runtime writer after a row upsert replaces runtime state", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-upsert-runtime-"));
     const handle = openOpenClawStateDatabase({ path: path.join(root, "state.sqlite") });

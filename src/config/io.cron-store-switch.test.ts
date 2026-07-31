@@ -130,6 +130,7 @@ describe("cron store switch ownership guard", () => {
       { entries: { ops: { default: true }, research: {} } },
       {
         declarePaths: false,
+        sessionStore: "/tmp/openclaw-fixed-sessions.json",
         switchStore: false,
         nextAgents: { entries: { research: {}, ops: {} } },
       },
@@ -138,6 +139,15 @@ describe("cron store switch ownership guard", () => {
     await expect(fixture.write()).resolves.toBeDefined();
     const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
     expect(persisted.agents?.ownership).toBe("explicit");
+    expect(persisted.agents?.entries?.ops?.workspace).toBe(
+      path.join(fixture.env.HOME!, ".openclaw", "workspace"),
+    );
+    expect(persisted.agents?.defaults).toMatchObject({
+      heartbeat: { agentId: "ops" },
+      systemAgent: { agentId: "ops" },
+      authInheritance: { agentId: "ops" },
+      sessionStore: { agentId: "ops" },
+    });
   });
 
   it("refuses a same-store sole replacement with ownerless jobs", async () => {

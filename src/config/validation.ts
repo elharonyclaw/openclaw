@@ -166,6 +166,7 @@ export function materializeLegacyAgentOwnershipForActiveChannelsResult(
   legacyDefaultAgentId: string,
   env?: NodeJS.ProcessEnv,
   manifestRecords?: PluginManifestRegistry["plugins"],
+  options?: { materializeWorkspace?: boolean },
 ): LegacyDefaultAgentRoleMaterialization {
   const ambientChannelIds = listChannelIdsForOwnershipMigration({
     config,
@@ -174,6 +175,8 @@ export function materializeLegacyAgentOwnershipForActiveChannelsResult(
   });
   const materialized = materializeLegacyDefaultAgentRoles(config, legacyDefaultAgentId, {
     ambientChannelIds,
+    materializeWorkspace: options?.materializeWorkspace,
+    env,
   });
   const next = inheritLegacyDefaultAgentId(config, materialized.config);
   appendLegacyOwnershipWarnings(next, materialized.warnings);
@@ -214,7 +217,7 @@ function validateConfigObjectWithPluginsBase(
         manifestRegistry: registryInfo?.registry,
       })
     : base.config;
-  const ownershipWarnings =
+  const collectOwnershipWarnings = () =>
     listAgentEntriesWithSource(config).length > 1
       ? collectAgentOwnershipWarnings(
           config,
@@ -227,12 +230,18 @@ function validateConfigObjectWithPluginsBase(
           }),
         )
       : [];
+  const ownershipWarnings = collectOwnershipWarnings();
   if (opts.pluginValidation === "skip") {
     return { ok: true, config, warnings: ownershipWarnings };
   }
 
   const issues: ConfigValidationIssue[] = [];
   const warnings: ConfigValidationIssue[] = [...ownershipWarnings];
+  const ownershipWarningRefs = new Set(ownershipWarnings);
+  const finalizedWarnings = () => [
+    ...warnings.filter((warning) => !ownershipWarningRefs.has(warning)),
+    ...collectOwnershipWarnings(),
+  ];
   const hasExplicitPluginsConfig = isRecord(raw) && Object.hasOwn(raw, "plugins");
   const explicitPluginReferences = collectExplicitPluginReferences(raw);
 
@@ -709,9 +718,10 @@ function validateConfigObjectWithPluginsBase(
   validateConfiguredModelRefs();
 
   if (!hasExplicitPluginsConfig) {
+    const finalWarnings = finalizedWarnings();
     return issues.length > 0
-      ? { ok: false, issues, warnings }
-      : { ok: true, config: mutatedConfig, warnings };
+      ? { ok: false, issues, warnings: finalWarnings }
+      : { ok: true, config: mutatedConfig, warnings: finalWarnings };
   }
 
   const { registry } = ensureRegistry();
@@ -731,7 +741,8 @@ function validateConfigObjectWithPluginsBase(
     warnings,
   });
 
+  const finalWarnings = finalizedWarnings();
   return issues.length > 0
-    ? { ok: false, issues, warnings }
-    : { ok: true, config: mutatedConfig, warnings };
+    ? { ok: false, issues, warnings: finalWarnings }
+    : { ok: true, config: mutatedConfig, warnings: finalWarnings };
 }

@@ -33,7 +33,7 @@ export function canonicalizeSessionKeyForAgent(agentId: string, key: string): st
 }
 
 function resolveDefaultStoreAgentId(cfg: OpenClawConfig): string {
-  const persistedAgentId = cfg.agents?.defaults?.sessionStore?.agentId?.trim();
+  const persistedAgentId = normalizeOptionalString(cfg.agents?.defaults?.sessionStore?.agentId);
   return normalizeAgentId(
     persistedAgentId ?? tryResolveLegacyCompatibilityAgentId(cfg) ?? resolveDefaultAgentId(cfg),
   );

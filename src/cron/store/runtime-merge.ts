@@ -59,13 +59,11 @@ export function preserveConcurrentCronRuntime(params: {
   }
   const incomingState = params.next.state ?? {};
   const currentState = params.current.state ?? {};
-  if (
-    !isDeepStrictEqual(incomingState, params.expectedRuntimeState) ||
-    isDeepStrictEqual(currentState, params.expectedRuntimeState)
-  ) {
+  if (!isDeepStrictEqual(incomingState, params.expectedRuntimeState)) {
     return params.next;
   }
-  // Metadata-only edits keep a concurrently changed row, while intentional state edits win.
+  // An unchanged incoming state cannot own a concurrent runtime timestamp. Preserve
+  // the newest metadata even when the other writer changed only updatedAtMs.
   return {
     ...params.next,
     updatedAtMs: Math.max(params.next.updatedAtMs, params.current.updatedAtMs),

@@ -482,10 +482,7 @@ export class ChatPane extends ChatPaneHeader {
       getPendingAttachmentReads: () => attachmentReads.pendingReads,
       readSignal: attachmentReadSignal,
       onPendingReadsChange: (delta) => attachmentReads.updatePending(attachmentReadSignal, delta),
-      onAttachmentsChange: (next) => {
-        state.chatAttachments = next;
-        state.requestUpdate?.();
-      },
+      onAttachmentsChange: (next) => this.chatState.updateComposerAttachments(next),
       onSend: () =>
         catalogKey
           ? void this.continueCatalogSession(catalogKey)

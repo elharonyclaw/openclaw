@@ -28,6 +28,7 @@ import {
   CHAT_COMPOSER_DRAFT_STORAGE_ERROR,
   loadChatComposerCommittedDraftRevision,
   loadChatComposerDraftRevision,
+  nextChatComposerMemoryFallbackSequence,
   persistChatComposerState,
   resolveStoredChatOutboxScope,
   restoreChatComposerState,
@@ -44,8 +45,6 @@ import {
 } from "./session-message-cache.ts";
 import { normalizeSidebarLayout } from "./sidebar-layout.ts";
 import { clearAuthoritativeTerminal } from "./terminal-message-identity.ts";
-
-let lastChatComposerMemoryFallbackSequence = 0;
 
 type ChatComposerRouteResetResult = {
   restoredFallback: boolean;
@@ -265,7 +264,7 @@ export function resetChatStateForRouteSession(
         message: state.chatMessage,
         attachments: [...state.chatAttachments],
         storageFailed: options.previousDraftRetry !== undefined,
-        sequence: ++lastChatComposerMemoryFallbackSequence,
+        sequence: nextChatComposerMemoryFallbackSequence(),
         ...(options.previousDraftRetry ? { draftRetry: options.previousDraftRetry } : {}),
       },
     };

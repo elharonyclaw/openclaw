@@ -10,6 +10,7 @@ import {
   notifyStoredChatOutboxChanges,
   resolveComposerStorageScope,
   resolveStoredChatOutboxScope,
+  storedChatOutboxScopeKey,
   storageTargetForGateway,
   UNRESOLVED_GLOBAL_AGENT_SCOPE,
   type ChatComposerScope,
@@ -61,6 +62,7 @@ type ChatComposerPersistenceState = {
   } | null;
   sessionKey: string;
   chatMessage: string;
+  chatAttachments: ChatAttachment[];
   chatQueue: ChatQueueItem[];
 };
 
@@ -81,12 +83,84 @@ export type ChatComposerPersistResult =
   | { status: "conflict" }
   | ({ status: "storage-failed" } & ChatComposerDraftRetry);
 
+type ChatComposerDraftCheckpoint =
+  | { status: "persisted"; draftRevision: number }
+  | Exclude<ChatComposerPersistResult, { status: "persisted" }>;
+
+const chatComposerCommandRecoveryBrand: unique symbol = Symbol("chatComposerCommandRecovery");
+
+export type ChatComposerCommandRecovery = {
+  readonly [chatComposerCommandRecoveryBrand]: true;
+};
+
+type ChatComposerCommandRecoveryState = {
+  cleared?: ChatComposerDraftCheckpoint;
+  draft: string;
+  restored?: Exclude<ChatComposerDraftCheckpoint, { status: "conflict" }>;
+  scope: StoredChatOutboxScope;
+  submitted: ChatComposerDraftCheckpoint;
+};
+
+export type ChatComposerCommandRecoveryResult =
+  | { status: "restored"; draftRevision: number }
+  | { status: "conflict" }
+  | ({ status: "storage-failed" } & ChatComposerDraftRetry);
+
+export type ChatComposerRecoveryPersistence = {
+  beginCommandRecovery: () => ChatComposerCommandRecovery | null;
+  checkpointCommandClear: (recovery: ChatComposerCommandRecovery) => boolean;
+  restoreCommandDraft: (recovery: ChatComposerCommandRecovery) => ChatComposerCommandRecoveryResult;
+  adoptCommandRecovery: (recovery: ChatComposerCommandRecovery) => void;
+};
+
 type ChatComposerPersistOptions = {
   agentId?: string;
   draft?: string;
   draftRevision?: number;
   expectedDraftRevision?: number;
 };
+
+const chatComposerCommandRecoveryStates = new WeakMap<
+  ChatComposerCommandRecovery,
+  ChatComposerCommandRecoveryState
+>();
+let lastChatComposerMemoryFallbackSequence = 0;
+
+export function nextChatComposerMemoryFallbackSequence(): number {
+  return ++lastChatComposerMemoryFallbackSequence;
+}
+
+export function chatComposerCommandRecoveryScope(
+  recovery: ChatComposerCommandRecovery,
+): StoredChatOutboxScope | null {
+  return chatComposerCommandRecoveryStates.get(recovery)?.scope ?? null;
+}
+
+export function chatComposerCommandClearResult(
+  recovery: ChatComposerCommandRecovery,
+): ChatComposerDraftCheckpoint | null {
+  return chatComposerCommandRecoveryStates.get(recovery)?.cleared ?? null;
+}
+
+export function chatComposerFallbackMatchesCommandClear(
+  recovery: ChatComposerCommandRecovery,
+  fallback: {
+    attachments: ChatAttachment[];
+    draftRetry?: ChatComposerDraftRetry;
+    message: string;
+    storageFailed: boolean;
+  },
+): boolean {
+  const cleared = chatComposerCommandRecoveryStates.get(recovery)?.cleared;
+  return (
+    cleared?.status === "storage-failed" &&
+    fallback.storageFailed &&
+    fallback.message === "" &&
+    fallback.attachments.length === 0 &&
+    fallback.draftRetry?.expectedDraftRevision === cleared.expectedDraftRevision &&
+    fallback.draftRetry.draftRevision === cleared.draftRevision
+  );
+}
 
 function serializeChatAttachment(attachment: ChatAttachment): ChatAttachment | null {
   const dataUrl = getChatAttachmentDataUrl(attachment);
@@ -630,6 +704,7 @@ export function restoreChatComposerState(
 }
 
 type ChatComposerDraftSnapshot = {
+  attachmentIds: string;
   sessionKey: string;
   chatMessage: string;
   agentId?: string;
@@ -713,16 +788,16 @@ export class ChatComposerPersistence {
     );
   }
 
-  persistNow() {
+  persistNow(): ChatComposerPersistResult {
     const state = this.getState();
     if (!this.ready || !state) {
-      return;
+      return { status: "conflict" };
     }
     let snapshot = this.pending;
     if (!snapshot) {
       const current = this.snapshot(state);
       if (this.isUnchanged(current)) {
-        return;
+        return { status: "persisted" };
       }
       snapshot = this.snapshot(
         state,
@@ -732,11 +807,144 @@ export class ChatComposerPersistence {
       this.latestDraftRevision = snapshot.draftRevision;
     }
     this.clearTimer();
-    this.pending = this.persistSnapshot(state, snapshot).status === "persisted" ? null : snapshot;
+    const result = this.persistSnapshot(state, snapshot);
+    this.pending = result.status === "persisted" ? null : snapshot;
+    return result;
   }
 
-  persistChangedState() {
-    this.persistNow();
+  persistChangedState(): ChatComposerPersistResult {
+    return this.persistNow();
+  }
+
+  checkpointCurrentDraft(): ChatComposerDraftCheckpoint {
+    const state = this.getState();
+    if (state) {
+      this.stageCurrentDraft(state);
+    }
+    const result = this.persistNow();
+    if (!state) {
+      return { status: "conflict" };
+    }
+    if (result.status !== "persisted") {
+      return result;
+    }
+    const revisions = this.readDraftRevisions(state);
+    const stored = loadChatComposerSnapshot(state, state.sessionKey);
+    if (
+      revisions.committed <= 0 ||
+      revisions.latestAttempt !== revisions.committed ||
+      (stored?.draft ?? "") !== state.chatMessage
+    ) {
+      return { status: "conflict" };
+    }
+    return { status: "persisted", draftRevision: revisions.committed };
+  }
+
+  beginCommandRecovery(): ChatComposerCommandRecovery | null {
+    const state = this.getState();
+    if (!this.ready || !state || !state.sessionKey.trim()) {
+      return null;
+    }
+    const recovery = {
+      [chatComposerCommandRecoveryBrand]: true,
+    } as ChatComposerCommandRecovery;
+    chatComposerCommandRecoveryStates.set(recovery, {
+      draft: state.chatMessage,
+      scope: resolveStoredChatOutboxScope(state, state.sessionKey),
+      submitted: this.checkpointCurrentDraft(),
+    });
+    return recovery;
+  }
+
+  checkpointCommandClear(recovery: ChatComposerCommandRecovery): boolean {
+    const state = this.getState();
+    const command = chatComposerCommandRecoveryStates.get(recovery);
+    if (!state || !command) {
+      return false;
+    }
+    if (command.submitted.status === "conflict") {
+      command.cleared = { status: "conflict" };
+      return false;
+    }
+    const currentScope = resolveStoredChatOutboxScope(state, state.sessionKey);
+    if (storedChatOutboxScopeKey(currentScope) !== storedChatOutboxScopeKey(command.scope)) {
+      command.cleared = { status: "conflict" };
+      return false;
+    }
+    command.cleared = this.checkpointCurrentDraft();
+    return command.cleared.status !== "conflict";
+  }
+
+  restoreCommandDraft(recovery: ChatComposerCommandRecovery): ChatComposerCommandRecoveryResult {
+    const state = this.getState();
+    const command = chatComposerCommandRecoveryStates.get(recovery);
+    const cleared = command?.cleared;
+    if (!state || !command || !cleared || cleared.status === "conflict") {
+      return { status: "conflict" };
+    }
+    const clearDraftRevision = cleared.draftRevision;
+    const expectedDraftRevision =
+      cleared.status === "persisted" ? cleared.draftRevision : cleared.expectedDraftRevision;
+    const revisions = loadChatComposerDraftRevisionState(
+      state,
+      command.scope.sessionKey,
+      command.scope.agentId,
+    );
+    if (
+      revisions.committed !== expectedDraftRevision ||
+      revisions.latestAttempt !== clearDraftRevision
+    ) {
+      return { status: "conflict" };
+    }
+    const currentScope = resolveStoredChatOutboxScope(state, state.sessionKey);
+    if (
+      storedChatOutboxScopeKey(currentScope) === storedChatOutboxScopeKey(command.scope) &&
+      this.latestDraftRevision !== clearDraftRevision
+    ) {
+      return { status: "conflict" };
+    }
+    const draftRevision = nextDraftRevision(clearDraftRevision);
+    const status = persistChatComposerStateResult(state, command.scope.sessionKey, {
+      agentId: command.scope.agentId,
+      draft: command.draft,
+      draftRevision,
+      expectedDraftRevision,
+    });
+    if (status === "conflict") {
+      return { status };
+    }
+    command.restored =
+      status === "persisted"
+        ? { status, draftRevision }
+        : { status, draftRevision, expectedDraftRevision };
+    return status === "persisted"
+      ? { status: "restored", draftRevision }
+      : { status, draftRevision, expectedDraftRevision };
+  }
+
+  adoptCommandRecovery(recovery: ChatComposerCommandRecovery): void {
+    const state = this.getState();
+    const command = chatComposerCommandRecoveryStates.get(recovery);
+    const restored = command?.restored;
+    if (!state || !command || !restored) {
+      return;
+    }
+    const currentScope = resolveStoredChatOutboxScope(state, state.sessionKey);
+    if (storedChatOutboxScopeKey(currentScope) !== storedChatOutboxScopeKey(command.scope)) {
+      return;
+    }
+    const expectedDraftRevision =
+      restored.status === "persisted" ? restored.draftRevision : restored.expectedDraftRevision;
+    const snapshot = this.snapshot(state, restored.draftRevision, expectedDraftRevision);
+    this.clearTimer();
+    this.latestDraftRevision = Math.max(this.latestDraftRevision, restored.draftRevision);
+    if (restored.status === "persisted") {
+      this.committedDraftRevision = restored.draftRevision;
+      this.lastPersisted = snapshot;
+      this.pending = null;
+      return;
+    }
+    this.pending = snapshot;
   }
 
   scopeForRouteSwitch(): StoredChatOutboxScope | null {
@@ -852,6 +1060,27 @@ export class ChatComposerPersistence {
     return { status };
   }
 
+  private stageCurrentDraft(state: ChatComposerPersistenceState): void {
+    const current = this.snapshot(state);
+    if (
+      this.pending?.sessionKey === current.sessionKey &&
+      this.pending.agentId === current.agentId &&
+      this.pending.chatMessage === current.chatMessage &&
+      this.pending.attachmentIds === current.attachmentIds
+    ) {
+      return;
+    }
+    if (!this.pending && this.isUnchanged(current)) {
+      return;
+    }
+    const draftRevision = nextDraftRevision(
+      Math.max(this.latestDraftRevision, this.pending?.draftRevision ?? 0),
+    );
+    this.latestDraftRevision = draftRevision;
+    this.pending = this.snapshot(state, draftRevision, this.committedDraftRevision);
+    this.clearTimer();
+  }
+
   private clearTimer() {
     if (this.timer === null) {
       return;
@@ -863,7 +1092,10 @@ export class ChatComposerPersistence {
   private isUnchanged(snapshot: ChatComposerDraftSnapshot): boolean {
     const last = this.lastPersisted;
     return Boolean(
-      last && last.sessionKey === snapshot.sessionKey && last.chatMessage === snapshot.chatMessage,
+      last &&
+      last.sessionKey === snapshot.sessionKey &&
+      last.chatMessage === snapshot.chatMessage &&
+      last.attachmentIds === snapshot.attachmentIds,
     );
   }
 
@@ -874,6 +1106,7 @@ export class ChatComposerPersistence {
   ): ChatComposerDraftSnapshot {
     const scope = resolveStoredChatOutboxScope(state, state.sessionKey);
     return {
+      attachmentIds: state.chatAttachments.map((attachment) => attachment.id).join("\u0000"),
       sessionKey: state.sessionKey,
       chatMessage: state.chatMessage,
       ...(scope.agentId ? { agentId: scope.agentId } : {}),

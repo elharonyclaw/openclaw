@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { subscribeStoredChatOutboxChanges } from "../../lib/chat/outbox-store.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import {
@@ -38,6 +38,7 @@ function createState(overrides: Partial<ComposerState> = {}): ComposerState {
     settings: { gatewayUrl: "ws://gateway.test/control" },
     sessionKey: "agent:lily:main",
     chatMessage: "",
+    chatAttachments: [],
     chatQueue: [],
     ...overrides,
   };
@@ -172,6 +173,63 @@ describe("chat composer persistence", () => {
     expect(loadChatComposerSnapshot(olderPane, olderPane.sessionKey)?.draft).toBe(
       "newest draft after conflict",
     );
+  });
+
+  it("does not recover a command over a newer attachment-only composer revision", () => {
+    const state = createState();
+    const persistence = new ChatComposerPersistence(() => state);
+    persistence.start();
+    state.chatMessage = "/approve approval-123 allow-once";
+    persistence.schedule();
+    const recovery = persistence.beginCommandRecovery();
+    expect(recovery).not.toBeNull();
+    if (!recovery) {
+      return;
+    }
+
+    state.chatMessage = "";
+    expect(persistence.checkpointCommandClear(recovery)).toBe(true);
+
+    const newerPane = createState();
+    const newerPersistence = new ChatComposerPersistence(() => newerPane);
+    newerPersistence.start();
+    newerPane.chatAttachments = [{ id: "newer-attachment" } as ChatAttachment];
+    newerPersistence.schedule();
+    expect(newerPersistence.persistForRouteSwitchResult()).toEqual({ status: "persisted" });
+
+    expect(persistence.restoreCommandDraft(recovery)).toEqual({ status: "conflict" });
+    expect(loadChatComposerSnapshot(state, state.sessionKey)).toBeNull();
+  });
+
+  it("keeps command recovery retryable when storage fails after the composer clear", () => {
+    const storage = createStorageMock();
+    const setItem = storage.setItem.bind(storage);
+    let failWrites = false;
+    storage.setItem = (key, value) => {
+      if (failWrites) {
+        throw new Error("quota exceeded");
+      }
+      setItem(key, value);
+    };
+    vi.stubGlobal("sessionStorage", storage);
+    const state = createState();
+    const persistence = new ChatComposerPersistence(() => state);
+    persistence.start();
+    state.chatMessage = "/redirect retry this";
+    persistence.schedule();
+    const recovery = persistence.beginCommandRecovery();
+    expect(recovery).not.toBeNull();
+    if (!recovery) {
+      return;
+    }
+
+    state.chatMessage = "";
+    failWrites = true;
+    expect(persistence.checkpointCommandClear(recovery)).toBe(true);
+    expect(persistence.restoreCommandDraft(recovery)).toMatchObject({
+      status: "storage-failed",
+    });
+    expect(loadChatComposerSnapshot(state, state.sessionKey)?.draft).toBe("/redirect retry this");
   });
 
   it("keeps the later edit when split pane timers flush in natural order", () => {

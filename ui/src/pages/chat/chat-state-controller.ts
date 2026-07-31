@@ -93,6 +93,7 @@ export class ChatStateController<TState extends ChatPageHost> implements Reactiv
     this.previousRealtimeConversation = state.realtimeTalkConversation;
     const renderLifecycle = state.renderLifecycle;
     state.requestUpdate = () => renderLifecycle.invalidate();
+    state.chatComposerRecovery = this.composerPersistence;
     this.cleanups.push(subscribeChatOutboxProjection(state));
     const sendChat = state.handleSendChat;
     state.handleSendChat = async (messageOverride, options) => {
@@ -124,6 +125,16 @@ export class ChatStateController<TState extends ChatPageHost> implements Reactiv
 
   addCleanup(cleanup: () => void) {
     this.cleanups.push(cleanup);
+  }
+
+  updateComposerAttachments(next: ChatAttachment[]) {
+    const state = this.stateValue;
+    if (!state) {
+      return;
+    }
+    state.chatAttachments = next;
+    this.composerPersistence.schedule();
+    state.requestUpdate?.();
   }
 
   private isRenderLifecycleScopeActive(scope: ChatRenderLifecycleScope): boolean {

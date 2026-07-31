@@ -7,6 +7,7 @@ import type { SessionCapability, SessionRefreshTarget } from "../../lib/sessions
 import type { ChatCommandHost } from "./chat-commands.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 import type { ChatSendTimingEntry } from "./chat-send-ack.ts";
+import type { ChatComposerRecoveryPersistence } from "./composer-persistence.ts";
 import type { ChatInputHistoryState } from "./input-history.ts";
 import type { RenderLifecycle } from "./render-lifecycle.ts";
 
@@ -39,11 +40,12 @@ export type ChatHost = ChatInputHistoryState &
     requestUpdate?: () => void;
     refreshSessionsAfterChat: Map<string, SessionRefreshTarget>;
     chatSubmitGuards?: Map<string, Promise<void>>;
+    chatComposerRecovery?: ChatComposerRecoveryPersistence;
     chatSendTimingsByRun?: Map<string, ChatSendTimingEntry>;
     eventLogBuffer?: unknown[];
     assistantAgentId?: string | null;
     agentsList?: ChatAgentsListSnapshot | null;
-    settings?: { chatFollowUpMode?: ChatFollowUpMode };
+    settings?: { chatFollowUpMode?: ChatFollowUpMode; gatewayUrl?: string | null };
     /** Prepared from the browser override and current Gateway effective queue mode. */
     chatFollowUpMode?: ControlUiFollowUpMode;
     /** Selected message to reply to (right-click / keyboard shortcut). */

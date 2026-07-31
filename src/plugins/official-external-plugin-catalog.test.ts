@@ -1960,6 +1960,27 @@ describe("official external plugin catalog", () => {
     });
   });
 
+  it("lists OpenCode Go with its provider and media-understanding contracts", () => {
+    const opencodeGo = expectCatalogEntry("opencode-go");
+    const manifest = getOfficialExternalPluginCatalogManifest(opencodeGo);
+
+    expect(resolveOfficialExternalPluginId(opencodeGo)).toBe("opencode-go");
+    expect(resolveOfficialExternalPluginInstall(opencodeGo)).toEqual({
+      clawhubSpec: "clawhub:@openclaw/opencode-go-provider",
+      npmSpec: "@openclaw/opencode-go-provider",
+      defaultChoice: "npm",
+      minHostVersion: ">=2026.7.2",
+    });
+    expect(manifest?.providers?.map((provider) => provider.id)).toEqual(["opencode-go"]);
+    expect(manifest?.contracts?.mediaUnderstandingProviders).toEqual(["opencode-go"]);
+    expect(manifest?.providerEndpoints).toEqual([
+      {
+        endpointClass: "opencode-native",
+        hostSuffixes: ["opencode.ai"],
+      },
+    ]);
+  });
+
   it.each([
     ["teams-meetings", "@openclaw/teams-meetings", "teams_meetings", "teams"],
     ["zoom-meetings", "@openclaw/zoom-meetings", "zoom_meetings", "zoom"],

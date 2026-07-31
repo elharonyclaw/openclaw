@@ -42,7 +42,11 @@ function makeIndex(record: InstalledPluginIndex["plugins"][number]): InstalledPl
   };
 }
 
-function makeRegistry(pluginId: string, channels: string[] = [pluginId]): PluginManifestRegistry {
+function makeRegistry(
+  pluginId: string,
+  channels: string[] = [pluginId],
+  providers: string[] = [],
+): PluginManifestRegistry {
   return {
     plugins: [
       {
@@ -52,7 +56,7 @@ function makeRegistry(pluginId: string, channels: string[] = [pluginId]): Plugin
         source: `/app/dist/extensions/${pluginId}/index.js`,
         origin: "bundled",
         channels,
-        providers: [],
+        providers,
         cliBackends: [],
         syntheticAuthRefs: [],
         nonSecretAuthMarkers: [],
@@ -201,6 +205,40 @@ describe("listPersistedBundledPluginLocationBridges", () => {
       ]);
     },
   );
+
+  it("externalizes the shipped bundled OpenCode Go provider while preserving default enablement", async () => {
+    readPersistedInstalledPluginIndexMock.mockResolvedValue(
+      makeIndex({
+        pluginId: "opencode-go",
+        manifestPath: "/app/dist/extensions/opencode-go/openclaw.plugin.json",
+        manifestHash: "hash",
+        source: "/app/dist/extensions/opencode-go/index.js",
+        rootDir: "/app/dist/extensions/opencode-go",
+        origin: "bundled",
+        enabled: true,
+        enabledByDefault: true,
+        startup: startupInfo,
+        compat: [],
+        packageInstall: {
+          warnings: [],
+        },
+      }),
+    );
+    loadPluginManifestRegistryForInstalledIndexMock.mockReturnValue(
+      makeRegistry("opencode-go", [], ["opencode-go"]),
+    );
+
+    await expect(listPersistedBundledPluginLocationBridges({})).resolves.toEqual([
+      {
+        bundledPluginId: "opencode-go",
+        pluginId: "opencode-go",
+        preferredSource: "npm",
+        npmSpec: "@openclaw/opencode-go-provider",
+        clawhubSpec: "clawhub:@openclaw/opencode-go-provider",
+        enabledByDefault: true,
+      },
+    ]);
+  });
 
   it("does not create a relocation bridge without persisted or official install metadata", async () => {
     readPersistedInstalledPluginIndexMock.mockResolvedValue(

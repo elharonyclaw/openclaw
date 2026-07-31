@@ -1026,9 +1026,11 @@ describe("gateway server hooks", () => {
       const noAgentCall = cronRunCall();
       expect(noAgentCall?.job?.agentId).toBe("main");
       expect(noAgentCall?.sessionKey).toBe("agent:main:slack:channel:c123");
-      expect(peekSystemEventEntries("agent:main:global").map((event) => event.text)).toContain(
-        "Hook Hook: done",
-      );
+      expect(
+        peekSystemEventEntries(
+          resolveSystemEventQueueKey({ sessionKey: "global", agentId: "main" }),
+        ).map((event) => event.text),
+      ).toContain("Hook Hook: done");
       drainSystemEvents(resolveMainKey());
 
       mockIsolatedRunOkOnce();

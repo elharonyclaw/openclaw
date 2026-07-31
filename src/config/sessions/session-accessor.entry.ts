@@ -8,6 +8,7 @@ import {
   normalizeAgentId,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
+import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveAgentMainSessionKey } from "./main-session.js";
@@ -239,7 +240,7 @@ function resolveSessionEntryStoreTarget(
     sessionKey: requestedKey,
     storeAgentId: scope.agentId,
   });
-  const canonicalAgentId = resolveAgentIdFromSessionKey(canonicalKey);
+  const canonicalAgentId = parseAgentSessionKey(canonicalKey)?.agentId;
   const explicitAgentId = scope.agentId ? normalizeAgentId(scope.agentId) : undefined;
   if (canonicalAgentId && explicitAgentId && canonicalAgentId !== explicitAgentId) {
     throw new Error(

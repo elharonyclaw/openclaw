@@ -312,29 +312,40 @@ export async function transformCronJobsStoreWithMetadata(
   transform: (loaded: LoadedCronStore) => CronStoreFile,
   acquireMetadata: (db: DatabaseSync) => boolean,
   env: NodeJS.ProcessEnv = process.env,
-  options?: { bumpStoreEpoch?: boolean },
+  options?: {
+    bumpStoreEpoch?: boolean;
+    expectedStoreEpoch?: number;
+    recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+  },
 ): Promise<boolean> {
   const resolvedStorePath = path.resolve(storePath);
   const storeKey = cronStoreKey(resolvedStorePath);
-  return runOpenClawStateWriteTransaction(
+  const result = runOpenClawStateWriteTransaction(
     ({ db }) => {
       const { rows, storeEpoch, runtimeRevision } = loadCronRowsWithEpoch(db, storeKey);
       const loaded =
         rows.length > 0
           ? loadedCronStoreFromRows(rows, storeEpoch, runtimeRevision)
           : emptyLoadedCronStore(storeEpoch, runtimeRevision);
+      if (options?.expectedStoreEpoch !== undefined && options.expectedStoreEpoch !== storeEpoch) {
+        return { acquired: false } as const;
+      }
       if (!acquireMetadata(db)) {
-        return false;
+        return { acquired: false } as const;
       }
       const next = transform(loaded);
       assertCronStoreCanPersist(next);
       replaceCronRows(db, storeKey, next, {
         bumpStoreEpoch: options?.bumpStoreEpoch ?? true,
       });
-      return true;
+      return { acquired: true, storeEpoch: readCronStoreEpoch(db, storeKey) } as const;
     },
     { env },
   );
+  if (result.acquired) {
+    options?.recordCommittedStoreEpoch?.(result.storeEpoch);
+  }
+  return result.acquired;
 }
 
 // Public plugin SDK seam; core callers use the SQLite-backed cron-jobs names above.

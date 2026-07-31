@@ -33,6 +33,10 @@ import { armTimer, runMissedJobs, stopTimer } from "./timer.js";
 async function materializeLoadedLegacyDefaultAgentOwners(
   state: CronServiceState,
   legacyDefaultAgentId: string,
+  options?: {
+    expectedStoreEpoch?: () => number | undefined;
+    recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+  },
 ) {
   const jobs = state.store?.jobs ?? [];
   return await materializeLegacyDefaultCronJobOwners({
@@ -41,14 +45,23 @@ async function materializeLoadedLegacyDefaultAgentOwners(
     records: jobs as unknown as Array<Record<string, unknown>>,
     persistRecords: async (records) => {
       let candidateRecords = records;
+      const requiredStoreEpoch = options?.expectedStoreEpoch?.();
+      if (requiredStoreEpoch !== undefined && state.storeEpoch !== requiredStoreEpoch) {
+        await ensureLoaded(state, { forceReload: true, skipRecompute: true });
+        if (state.storeEpoch !== requiredStoreEpoch) {
+          throw new Error("cron store changed after rollback snapshot; retry config write");
+        }
+        candidateRecords = (state.store?.jobs ?? []) as unknown as Array<Record<string, unknown>>;
+      }
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const expectedStoreEpoch = state.storeEpoch;
+        const expectedStoreEpoch = requiredStoreEpoch ?? state.storeEpoch;
         const persisted = await materializeCronJobsStoreOwners({
           storePath: state.deps.storePath,
           legacyDefaultAgentId,
           records: candidateRecords as unknown as CronJob[],
           legacyImportedJobIds: state.legacyImportedJobIds,
           expectedStoreEpoch,
+          recordCommittedStoreEpoch: options?.recordCommittedStoreEpoch,
           env: state.deps.env,
         });
         if (persisted.matched) {
@@ -58,6 +71,9 @@ async function materializeLoadedLegacyDefaultAgentOwners(
             }
           }
           return persisted.rewritten;
+        }
+        if (requiredStoreEpoch !== undefined) {
+          throw new Error("cron store changed after rollback snapshot; retry config write");
         }
         if (attempt === 1) {
           throw new Error("cron store changed during legacy owner migration twice; retry startup");
@@ -74,11 +90,21 @@ async function materializeLoadedLegacyDefaultAgentOwners(
 export async function beginLegacyDefaultAgentOwnerHandoff(
   state: CronServiceState,
   legacyDefaultAgentId: string,
+  options?: {
+    beforeMigration?: () => Promise<void>;
+    expectedStoreEpoch?: () => number | undefined;
+    recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+  },
 ) {
   const release = await acquireCronOperationLock(state);
   try {
+    await options?.beforeMigration?.();
     await ensureLoaded(state, { skipRecompute: true });
-    const migration = await materializeLoadedLegacyDefaultAgentOwners(state, legacyDefaultAgentId);
+    const migration = await materializeLoadedLegacyDefaultAgentOwners(
+      state,
+      legacyDefaultAgentId,
+      options,
+    );
     await refreshLegacyDefaultAgentOwnerHandoff(state);
     return { migration, release };
   } catch (error) {

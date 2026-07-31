@@ -175,11 +175,11 @@ describe("sessions_send gateway loopback", () => {
     const tool = getSessionsSendTool();
 
     const result = await tool.execute("call-loopback", {
-      sessionKey: "main",
+      sessionKey: "global",
       message: "ping",
       timeoutSeconds: 5,
     });
-    expectSessionsSendDetails(result, { reply: "pong", sessionKey: "main" });
+    expectSessionsSendDetails(result, { reply: "pong", sessionKey: "global" });
 
     const firstCall = spy.mock.calls.at(0)?.[0] as
       | { lane?: string; inputProvenance?: { kind?: string; sourceTool?: string } }

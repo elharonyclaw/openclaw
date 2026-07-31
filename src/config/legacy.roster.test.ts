@@ -671,6 +671,7 @@ describe("persisted implicit-main roster migration", () => {
         const result = validateConfigObjectWithPlugins(
           {
             agents: { entries: { ops: {}, research: {} } },
+            channels: { whatsapp: { enabled: false } },
             plugins: { entries: { whatsapp: { enabled: true } } },
           },
           {

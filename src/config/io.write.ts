@@ -550,6 +550,7 @@ export async function writeConfigFileFromContext(
   await preCommitRuntimePreflight(sourceConfigForPreflight);
 
   let releaseCronHandoffs: (() => void) | undefined;
+  let rollbackCronHandoffs: (() => Promise<void>) | undefined;
   let createdWorkspacePluginDirectories: string[] = [];
   let configCommitted = false;
   try {
@@ -586,12 +587,6 @@ export async function writeConfigFileFromContext(
           warn: (message) => deps.logger.warn(message),
           skipOutputLogs: options.skipOutputLogs,
         });
-        options.assertConfigPathForWrite?.();
-        if (options.baseSnapshot) {
-          // Cooperating writers share the commit lock through handoff and rename. A
-          // post-handoff check would detect outsiders only after cron became durable.
-          assertBaseSnapshotStillCurrent(snapshot, configPath, deps.fs);
-        }
         if (cronHandoffAgentId) {
           const prepared = await prepareLegacyCronOwnerHandoffs({
             env: deps.env,
@@ -599,6 +594,13 @@ export async function writeConfigFileFromContext(
             targets: cronStoreWritePlan.targets,
           });
           releaseCronHandoffs = prepared.release;
+          rollbackCronHandoffs = prepared.rollback;
+        }
+        // Ordering invariant: this is the final conflict fence. No await may occur
+        // between these synchronous checks and replaceFileAtomic's rename.
+        options.assertConfigPathForWrite?.();
+        if (options.baseSnapshot) {
+          assertBaseSnapshotStillCurrent(snapshot, configPath, deps.fs);
         }
       },
     });
@@ -705,11 +707,20 @@ export async function writeConfigFileFromContext(
       },
     };
   } catch (error) {
+    let failure = error;
     if (!configCommitted) {
+      try {
+        await rollbackCronHandoffs?.();
+      } catch (rollbackError) {
+        failure = new AggregateError(
+          [error, rollbackError],
+          "config write failed and cron ownership rollback did not complete",
+        );
+      }
       await removeEmptyWorkspacePluginDirectories(deps.fs, createdWorkspacePluginDirectories);
     }
-    await appendWriteAudit("failed", error);
-    throw error;
+    await appendWriteAudit("failed", failure);
+    throw failure;
   } finally {
     releaseCronHandoffs?.();
   }

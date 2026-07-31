@@ -86,6 +86,10 @@ vi.mock("./agent-scope.js", () => ({
 }));
 
 vi.mock("./agent-scope-config.js", () => ({
+  resolveAgentEntry: (
+    config: { agents?: { entries?: Record<string, unknown> } },
+    agentId: string,
+  ) => config.agents?.entries?.[agentId],
   tryResolveSoleAgentId: () =>
     mocks.configuredAgentIds.length === 1 ? mocks.configuredAgentIds[0] : undefined,
 }));

@@ -3,7 +3,11 @@ import { normalizeAgentId } from "../routing/session-key.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { materializeLegacyDefaultCronJobOwnersInRecords } from "./legacy-default-agent-owner-records.js";
 import { cronStoreKey } from "./store/key.js";
-import { materializeCronRowAgentOwners } from "./store/row-codec.js";
+import {
+  CronStoreEpochMismatchError,
+  materializeCronRowAgentOwners,
+  readCronStoreEpoch,
+} from "./store/row-codec.js";
 
 export type LegacyDefaultCronOwnerMigrationResult = {
   changes: string[];
@@ -16,24 +20,37 @@ export async function materializeLegacyDefaultCronJobOwners(params: {
   legacyDefaultAgentId: string;
   records?: Array<Record<string, unknown>>;
   env?: NodeJS.ProcessEnv;
+  expectedStoreEpoch?: number;
+  recordCommittedStoreEpoch?: (storeEpoch: number) => void;
   persistRecords?: (records: Array<Record<string, unknown>>) => Promise<number | void>;
 }): Promise<LegacyDefaultCronOwnerMigrationResult> {
   const agentId = normalizeAgentId(params.legacyDefaultAgentId);
   try {
     // Runtime reads only canonical cron_jobs rows. Doctor passes its merged
     // legacy-JSON records here explicitly before any later archival repair.
-    const rewritten =
-      params.records && params.persistRecords
-        ? materializeLegacyDefaultCronJobOwnersInRecords(params.records, agentId)
-        : runOpenClawStateWriteTransaction(
-            ({ db }) =>
-              materializeCronRowAgentOwners(
-                db,
-                cronStoreKey(path.resolve(params.storePath)),
-                agentId,
-              ),
-            { env: params.env },
-          );
+    const usesExplicitRecords = Boolean(params.records && params.persistRecords);
+    let rewritten: number;
+    if (usesExplicitRecords) {
+      rewritten = materializeLegacyDefaultCronJobOwnersInRecords(params.records ?? [], agentId);
+    } else {
+      const result = runOpenClawStateWriteTransaction(
+        ({ db }) => {
+          const storeKey = cronStoreKey(path.resolve(params.storePath));
+          const currentEpoch = readCronStoreEpoch(db, storeKey);
+          if (
+            params.expectedStoreEpoch !== undefined &&
+            params.expectedStoreEpoch !== currentEpoch
+          ) {
+            throw new CronStoreEpochMismatchError(params.expectedStoreEpoch, currentEpoch);
+          }
+          const rewrittenCount = materializeCronRowAgentOwners(db, storeKey, agentId);
+          return { rewritten: rewrittenCount, storeEpoch: readCronStoreEpoch(db, storeKey) };
+        },
+        { env: params.env },
+      );
+      rewritten = result.rewritten;
+      params.recordCommittedStoreEpoch?.(result.storeEpoch);
+    }
     const persistedRewritten =
       params.records && params.persistRecords ? await params.persistRecords(params.records) : 0;
     const effectiveRewritten = Math.max(rewritten, persistedRewritten ?? 0);

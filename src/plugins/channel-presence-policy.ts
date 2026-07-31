@@ -487,8 +487,41 @@ export function listChannelIdsForOwnershipMigration(
     "includePersistedAuthState"
   >,
 ): string[] {
-  // Persisted auth is migration evidence only; it must never reactivate a channel at startup.
-  return listChannelIdsForGatewayPolicy(params, true);
+  const env = params.env ?? process.env;
+  const workspaceDir =
+    params.workspaceDir ?? tryResolveConfiguredAgentWorkspaceDir(params.config, env);
+  const records =
+    params.manifestRecords ??
+    loadInstalledChannelManifestRecords({ config: params.config, workspaceDir, env });
+  const trustConfig = params.activationSourceConfig ?? params.config;
+  const normalizedConfig = normalizePluginsConfig(trustConfig.plugins);
+  const persistedTrustedChannelIds = listPotentialConfiguredChannelPresenceSignals(
+    params.config,
+    env,
+    {
+      includePersistedAuthState: true,
+      ambientEnvTriggers: params.ambientEnvTriggers,
+    },
+  )
+    .filter((signal) => signal.source === "persisted-auth")
+    .map((signal) => signal.channelId)
+    .filter((channelId) =>
+      records.some(
+        (plugin) =>
+          recordDeclaresChannel(plugin, channelId) &&
+          isChannelPluginEligibleForScopedOwnership({
+            plugin,
+            normalizedConfig,
+            rootConfig: trustConfig,
+          }),
+      ),
+    );
+  // This migration-only union intentionally bypasses channel enabled:false for
+  // trusted persisted state; activation continues through the stricter policy.
+  return normalizeChannelIds([
+    ...listChannelIdsForGatewayPolicy(params, true),
+    ...persistedTrustedChannelIds,
+  ]);
 }
 
 /** Lists channels that suppression removes because their only presence is ambient env. */

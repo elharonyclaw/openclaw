@@ -73,18 +73,26 @@ export type LegacyCronRepairResult = {
 export async function materializeLegacyDefaultCronJobOwners(params: {
   cfg: OpenClawConfig;
   legacyDefaultAgentId: string;
+  repairState?: LegacyCronRepairState | null;
   storePath?: string;
   env?: NodeJS.ProcessEnv;
+  expectedStoreEpoch?: number;
+  recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+  recordLegacyReceiptCreated?: () => void;
 }): Promise<LegacyCronRepairResult> {
   let state: LegacyCronRepairState | null;
-  try {
-    state = await loadLegacyCronRepairState({
-      cfg: params.cfg,
-      storePath: params.storePath,
-      env: params.env,
-    });
-  } catch (err) {
-    return { changes: [], warnings: [`Failed reading cron storage: ${errorMessage(err)}`] };
+  if (params.repairState !== undefined) {
+    state = params.repairState;
+  } else {
+    try {
+      state = await loadLegacyCronRepairState({
+        cfg: params.cfg,
+        storePath: params.storePath,
+        env: params.env,
+      });
+    } catch (err) {
+      return { changes: [], warnings: [`Failed reading cron storage: ${errorMessage(err)}`] };
+    }
   }
   if (!state || state.rawJobs.length === 0) {
     return { changes: [], warnings: [] };
@@ -95,6 +103,8 @@ export async function materializeLegacyDefaultCronJobOwners(params: {
       storePath: state.storePath,
       legacyDefaultAgentId: params.legacyDefaultAgentId,
       env: params.env,
+      expectedStoreEpoch: params.expectedStoreEpoch,
+      recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
     });
   }
   const persistImportedRecords = async () => {
@@ -120,17 +130,24 @@ export async function materializeLegacyDefaultCronJobOwners(params: {
       },
       (db) => acquireLegacyCronMigrationReceipt(db, migrationSource),
       params.env,
-      { bumpStoreEpoch: true },
+      {
+        bumpStoreEpoch: true,
+        expectedStoreEpoch: params.expectedStoreEpoch,
+        recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
+      },
     );
     if (!acquired) {
       throw new Error("legacy cron import was completed concurrently; retry the config write");
     }
+    params.recordLegacyReceiptCreated?.();
   };
   return await materializeLegacyDefaultCronJobOwnersInStore({
     storePath: state.storePath,
     legacyDefaultAgentId: params.legacyDefaultAgentId,
     records: state.rawJobs,
     env: params.env,
+    expectedStoreEpoch: params.expectedStoreEpoch,
+    recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
     persistRecords: persistImportedRecords,
   });
 }

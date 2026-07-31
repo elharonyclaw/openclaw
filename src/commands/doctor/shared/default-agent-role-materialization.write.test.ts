@@ -692,18 +692,19 @@ describe("default role materialization authored writes", () => {
         talk: { ...snapshot.config.talk, agentId: "research" },
       };
 
-      await io.writeConfigFile(nextConfig, {
-        baseSnapshot: snapshot,
-        explicitSetPaths: [["agents", "entries"]],
-        explicitSetValueSource: nextConfig,
-        allowedAgentRosterRemovals: ["ops"],
-      });
+      await expect(
+        io.writeConfigFile(nextConfig, {
+          baseSnapshot: snapshot,
+          explicitSetPaths: [["agents", "entries"]],
+          explicitSetValueSource: nextConfig,
+          allowedAgentRosterRemovals: ["ops"],
+        }),
+      ).rejects.toThrow("contains 1 ownerless legacy cron job(s)");
 
       const persisted = JSON.parse(await fs.readFile(configPath, "utf-8")) as {
-        agents?: { ownership?: string; entries?: Record<string, unknown> };
+        agents?: { entries?: Record<string, unknown> };
       };
-      expect(persisted.agents?.ownership).toBe("explicit");
-      expect(persisted.agents?.entries).toEqual({ research: {}, writer: {} });
+      expect(persisted.agents?.entries).toEqual({ ops: {} });
       expect(
         (await loadCronJobsStoreWithConfigJobsReadOnly(storePath, env)).store.jobs[0]?.agentId,
       ).toBeUndefined();

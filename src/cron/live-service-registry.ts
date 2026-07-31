@@ -2,7 +2,14 @@ import path from "node:path";
 import type { LegacyDefaultCronOwnerMigrationResult } from "./legacy-default-agent-owner-migration.js";
 
 type LiveCronOwnerMigration = {
-  beginLegacyDefaultAgentOwnerHandoff: (legacyDefaultAgentId: string) => Promise<{
+  beginLegacyDefaultAgentOwnerHandoff: (
+    legacyDefaultAgentId: string,
+    options?: {
+      beforeMigration?: () => Promise<void>;
+      expectedStoreEpoch?: () => number | undefined;
+      recordCommittedStoreEpoch?: (storeEpoch: number) => void;
+    },
+  ) => Promise<{
     migration: LegacyDefaultCronOwnerMigrationResult;
     release: () => void;
   }>;
@@ -65,6 +72,9 @@ type LiveCronOwnerHandoff = {
 export function beginLegacyDefaultOwnerHandoff(params: {
   storePath: string;
   legacyDefaultAgentId: string;
+  beforeMigration?: () => Promise<void>;
+  expectedStoreEpoch?: () => number | undefined;
+  recordCommittedStoreEpoch?: (storeEpoch: number) => void;
 }): LiveCronOwnerHandoff {
   const key = path.resolve(params.storePath);
   const state = getLiveStore(key);
@@ -85,12 +95,17 @@ export function beginLegacyDefaultOwnerHandoff(params: {
     drainAndSeal: async () => {
       const [leader, ...followers] = participants;
       if (!leader) {
+        await params.beforeMigration?.();
         return { changes: [], warnings: [] };
       }
       // One participant holds the store-wide operation lock and performs the
       // migration. That lock already drains every service sharing this store;
       // followers only reload the durable rows while it remains held.
-      const result = await leader.beginLegacyDefaultAgentOwnerHandoff(params.legacyDefaultAgentId);
+      const result = await leader.beginLegacyDefaultAgentOwnerHandoff(params.legacyDefaultAgentId, {
+        beforeMigration: params.beforeMigration,
+        expectedStoreEpoch: params.expectedStoreEpoch,
+        recordCommittedStoreEpoch: params.recordCommittedStoreEpoch,
+      });
       handoff.releaseStoreLock = result.release;
       await Promise.all(
         followers.map((service) =>

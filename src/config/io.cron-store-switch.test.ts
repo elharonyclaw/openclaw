@@ -1,3 +1,4 @@
+import fsNode from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,6 +42,7 @@ async function createStoreSwitchFixture(
   },
   options: {
     declarePaths?: boolean;
+    fsModule?: typeof fsNode;
     nextAgents?: OpenClawConfig["agents"];
     nextSessionStore?: string;
     sessionStore?: string;
@@ -71,6 +73,7 @@ async function createStoreSwitchFixture(
     observe: false,
     preservedLegacyRootKeys: ["cron"],
     logger: { warn: () => {}, error: () => {} },
+    ...(options.fsModule ? { fs: options.fsModule } : {}),
   });
   const snapshot = await io.readConfigFileSnapshot();
   const nextConfig = {
@@ -319,9 +322,10 @@ describe("cron store switch ownership guard", () => {
       releaseHandoff = resolve;
     });
     const registration = registerLiveCronService(fixture.destinationStorePath, {
-      beginLegacyDefaultAgentOwnerHandoff: async () => {
+      beginLegacyDefaultAgentOwnerHandoff: async (_agentId, options) => {
         markHandoffStarted();
         await handoffMayFinish;
+        await options?.beforeMigration?.();
         return { migration: { changes: [], warnings: [] }, release: () => {} };
       },
       refreshLegacyDefaultAgentOwnerHandoff: async () => {},
@@ -360,6 +364,189 @@ describe("cron store switch ownership guard", () => {
       releaseHandoff();
       registration.unregister();
     }
+  });
+
+  it("rolls back prepared cron ownership when an external edit wins during handoff", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {} } },
+      {
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
+    const receiptBefore = readRetainedLegacyDefaultCronOwnerForStore(
+      fixture.destinationStorePath,
+      fixture.env,
+    );
+    let markHandoffStarted = () => {};
+    const handoffStarted = new Promise<void>((resolve) => {
+      markHandoffStarted = resolve;
+    });
+    let releaseHandoff = () => {};
+    const handoffMayFinish = new Promise<void>((resolve) => {
+      releaseHandoff = resolve;
+    });
+    const registration = registerLiveCronService(fixture.destinationStorePath, {
+      beginLegacyDefaultAgentOwnerHandoff: async (_agentId, options) => {
+        markHandoffStarted();
+        await handoffMayFinish;
+        await options?.beforeMigration?.();
+        return { migration: { changes: [], warnings: [] }, release: () => {} };
+      },
+      refreshLegacyDefaultAgentOwnerHandoff: async () => {},
+    });
+    const winningConfig = `${JSON.stringify({
+      agents: {
+        ownership: "explicit",
+        entries: { research: {}, writer: {} },
+      },
+      cron: { store: fixture.destinationStorePath },
+    })}\n`;
+
+    try {
+      const write = fixture.write();
+      await handoffStarted;
+      await fs.writeFile(fixture.configPath, winningConfig, "utf8");
+      releaseHandoff();
+
+      await expect(write).rejects.toThrow("config changed since last load");
+      await expect(fs.readFile(fixture.configPath, "utf8")).resolves.toBe(winningConfig);
+      await expect(
+        loadCronJobsStoreWithConfigJobsReadOnly(fixture.destinationStorePath, fixture.env),
+      ).resolves.toMatchObject({
+        store: { jobs: [expect.not.objectContaining({ agentId: "ops" })] },
+      });
+      expect(
+        readRetainedLegacyDefaultCronOwnerForStore(fixture.destinationStorePath, fixture.env),
+      ).toBe(receiptBefore);
+    } finally {
+      releaseHandoff();
+      registration.unregister();
+    }
+  });
+
+  it("rolls back prepared cron ownership when the atomic rename fails", async () => {
+    const injectedFs = {
+      ...fsNode,
+      promises: {
+        ...fsNode.promises,
+        rename: async (from, to) => {
+          if (path.basename(String(to)) === "openclaw.json") {
+            throw new Error("synthetic config rename failure");
+          }
+          return await fsNode.promises.rename(from, to);
+        },
+      },
+    } as typeof fsNode;
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {} } },
+      {
+        fsModule: injectedFs,
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
+    const configBefore = await fs.readFile(fixture.configPath, "utf8");
+
+    await expect(fixture.write()).rejects.toThrow("synthetic config rename failure");
+    await expect(fs.readFile(fixture.configPath, "utf8")).resolves.toBe(configBefore);
+    const jobs = (
+      await loadCronJobsStoreWithConfigJobsReadOnly(fixture.destinationStorePath, fixture.env)
+    ).store.jobs;
+    expect(jobs[0]?.agentId).toBeUndefined();
+    expect(
+      readRetainedLegacyDefaultCronOwnerForStore(fixture.destinationStorePath, fixture.env),
+    ).toBeUndefined();
+  });
+
+  it("rolls back committed cron ownership when sealed-service refresh fails", async () => {
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("ownerless")],
+      { entries: { ops: {} } },
+      {
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
+    const registration = registerLiveCronService(fixture.destinationStorePath, {
+      beginLegacyDefaultAgentOwnerHandoff: async (_agentId, options) => {
+        await options?.beforeMigration?.();
+        return { migration: { changes: [], warnings: [] }, release: () => {} };
+      },
+      refreshLegacyDefaultAgentOwnerHandoff: async () => {
+        throw new Error("synthetic sealed refresh failure");
+      },
+    });
+
+    try {
+      await expect(fixture.write()).rejects.toThrow("rollback did not complete");
+      const jobs = (
+        await loadCronJobsStoreWithConfigJobsReadOnly(fixture.destinationStorePath, fixture.env)
+      ).store.jobs;
+      expect(jobs[0]?.agentId).toBeUndefined();
+      expect(
+        readRetainedLegacyDefaultCronOwnerForStore(fixture.destinationStorePath, fixture.env),
+      ).toBeUndefined();
+    } finally {
+      registration.unregister();
+    }
+  });
+
+  it("removes legacy-import rows and receipts when the config rename fails", async () => {
+    const injectedFs = {
+      ...fsNode,
+      promises: {
+        ...fsNode.promises,
+        rename: async (from, to) => {
+          if (path.basename(String(to)) === "openclaw.json") {
+            throw new Error("synthetic legacy-import rename failure");
+          }
+          return await fsNode.promises.rename(from, to);
+        },
+      },
+    } as typeof fsNode;
+    const fixture = await createStoreSwitchFixture(
+      [],
+      { entries: { ops: {} } },
+      {
+        fsModule: injectedFs,
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { ops: {}, research: {} },
+        },
+      },
+    );
+    await fs.mkdir(path.dirname(fixture.destinationStorePath), { recursive: true });
+    await fs.writeFile(
+      fixture.destinationStorePath,
+      JSON.stringify([cronJob("legacy-ownerless"), cronJob("legacy-owned", "research")]),
+      "utf8",
+    );
+
+    await expect(fixture.write()).rejects.toThrow("synthetic legacy-import rename failure");
+    await expect(
+      loadCronJobsStoreWithConfigJobsReadOnly(fixture.destinationStorePath, fixture.env),
+    ).resolves.toMatchObject({ store: { jobs: [] } });
+    const { loadLegacyCronRepairState } = await import("../commands/doctor/cron/legacy-repair.js");
+    const repairState = await loadLegacyCronRepairState({
+      cfg: {},
+      storePath: fixture.destinationStorePath,
+      env: fixture.env,
+      readOnly: true,
+    });
+    expect(repairState?.legacyMigrationAlreadyImported).toBe(false);
   });
 
   it("retains a removed sole agent as the fixed-session-store compatibility owner", async () => {

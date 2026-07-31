@@ -7,6 +7,7 @@ import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
   listExplicitlyDisabledChannelIdsForConfig,
   listPotentialConfiguredChannelIds,
+  listPotentialConfiguredChannelPresenceSignals,
   type AmbientEnvTriggerPolicy,
 } from "../channels/config-presence.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -82,15 +83,28 @@ function listPotentialEnabledChannelIds(
   } = {},
 ): string[] {
   const disabled = new Set(listExplicitlyDisabledChannelIdsForConfig(config));
-  return sortUniquePluginIds([
+  const enabledSignals = [
     ...listPotentialConfiguredChannelIds(config, env, {
-      includePersistedAuthState: options.includePersistedAuthState ?? false,
+      includePersistedAuthState: false,
       ambientEnvTriggers: options.ambientEnvTriggers,
     }),
     ...listExplicitConfiguredChannelIdsForConfig(config),
-  ])
+  ]
     .map((id) => normalizeOptionalLowercaseString(id) ?? "")
     .filter((id) => id && !disabled.has(id));
+  if (options.includePersistedAuthState !== true) {
+    return sortUniquePluginIds(enabledSignals);
+  }
+  const persistedSignals = listPotentialConfiguredChannelPresenceSignals(config, env, {
+    includePersistedAuthState: true,
+    ambientEnvTriggers: options.ambientEnvTriggers,
+  })
+    .filter((signal) => signal.source === "persisted-auth")
+    .map((signal) => normalizeOptionalLowercaseString(signal.channelId) ?? "")
+    .filter(Boolean);
+  // Migration discovery unions only proven persisted-auth evidence back into the
+  // normal enabled set; ordinary config/env signals remain suppressed by enabled:false.
+  return sortUniquePluginIds([...enabledSignals, ...persistedSignals]);
 }
 
 function isGatewayStartupMemoryPlugin(plugin: InstalledPluginIndexRecord): boolean {

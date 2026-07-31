@@ -446,9 +446,7 @@ describe("onboard (non-interactive): gateway and remote auth", () => {
       );
       expect(cfg.agents?.list?.find((agent) => agent.id === "beta")?.workspace).toBeUndefined();
       expect(cfg.bindings).toEqual(seededBindings);
-      expect(warningRuntime.error).toHaveBeenCalledWith(
-        expect.stringContaining("existing agents keep their current workspace"),
-      );
+      expect(warningRuntime.error).not.toHaveBeenCalled();
       expect(cfg.gateway?.port).toBe(24680);
 
       const onboardWrite = capturedReplaceConfigFileCalls.at(-1);

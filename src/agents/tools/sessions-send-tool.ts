@@ -776,8 +776,9 @@ export function createSessionsSendTool(opts?: {
       });
       // Authorization must use the resolved owner even when the stored key is
       // bare; otherwise a cross-agent key is interpreted in the requester store.
-      const authorizationTargetKey =
-        targetAgentId && !parseAgentSessionKey(resolvedKey)
+      const authorizationTargetKey = mayUseRequesterForLiteralSentinel
+        ? effectiveRequesterKey
+        : targetAgentId && !parseAgentSessionKey(resolvedKey) && !mayUseRequesterForLiteralSentinel
           ? `agent:${targetAgentId}:${resolvedKey}`
           : resolvedKey;
       const access = visibilityGuard.check(authorizationTargetKey);

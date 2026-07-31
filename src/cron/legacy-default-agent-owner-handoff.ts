@@ -18,6 +18,10 @@ const MIGRATION_KIND = "cron-legacy-default-owner-handoff";
 
 type CronOwnerHandoffDatabase = Pick<OpenClawStateDatabase, "migration_runs" | "migration_sources">;
 
+export type RetainedLegacyCronOwnerHandoffSnapshot =
+  | { agentId: string; status: "pending" | "completed" }
+  | undefined;
+
 function handoffSourceKey(storeKey: string): string {
   return `${MIGRATION_KIND}:${createHash("sha256").update(storeKey).digest("hex")}`;
 }
@@ -164,6 +168,66 @@ export function readRetainedLegacyDefaultCronOwnerForStore(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   return readRetainedLegacyDefaultCronOwner(openOpenClawStateDatabase({ env }).db, storePath);
+}
+
+/** Captures the receipt state so a rejected config write can restore it. */
+export function snapshotRetainedLegacyDefaultCronOwnerHandoffForStore(
+  storePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): RetainedLegacyCronOwnerHandoffSnapshot {
+  return readLegacyDefaultCronOwnerHandoff(openOpenClawStateDatabase({ env }).db, storePath);
+}
+
+/** Restores the receipt that existed before a rejected config-write handoff. */
+export function restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
+  db: DatabaseSync,
+  storePath: string,
+  snapshot: RetainedLegacyCronOwnerHandoffSnapshot,
+): void {
+  const storeKey = cronStoreKey(storePath);
+  const stateDb = getNodeSqliteKysely<CronOwnerHandoffDatabase>(db);
+  if (!snapshot) {
+    executeSqliteQuerySync(
+      db,
+      stateDb.deleteFrom("migration_sources").where("source_key", "=", handoffSourceKey(storeKey)),
+    );
+    executeSqliteQuerySync(
+      db,
+      stateDb.deleteFrom("migration_runs").where("id", "=", handoffRunId(storeKey)),
+    );
+    return;
+  }
+  retainLegacyDefaultCronOwnerHandoff(db, storePath, snapshot.agentId);
+  if (snapshot.status === "completed") {
+    const now = Date.now();
+    const report = reportJson(snapshot.agentId, "completed");
+    executeSqliteQuerySync(
+      db,
+      stateDb
+        .updateTable("migration_sources")
+        .set({ status: "completed", imported_at: now, removed_source: 1, report_json: report })
+        .where("source_key", "=", handoffSourceKey(storeKey)),
+    );
+    executeSqliteQuerySync(
+      db,
+      stateDb
+        .updateTable("migration_runs")
+        .set({ finished_at: now, status: "completed", report_json: report })
+        .where("id", "=", handoffRunId(storeKey)),
+    );
+  }
+}
+
+/** Restores the receipt that existed before a rejected config-write handoff. */
+export function restoreRetainedLegacyDefaultCronOwnerHandoffForStore(
+  storePath: string,
+  snapshot: RetainedLegacyCronOwnerHandoffSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  runOpenClawStateWriteTransaction(
+    ({ db }) => restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(db, storePath, snapshot),
+    { env },
+  );
 }
 
 /** Retires a handoff only after a new-code startup has durably consumed its owner. */

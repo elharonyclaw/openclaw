@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { tryCronScheduleIdentity } from "../schedule-identity.js";
 import type { CronJob, CronStoreFile } from "../types.js";
 import { resolveCronRuntimeDelta } from "./runtime-merge.js";
 import { getCronStoreKysely } from "./schema.js";
@@ -81,6 +82,8 @@ export function writeCronRuntimeRowDeltas(params: {
           ...bindStateColumns(job.state ?? {}),
           state_json: JSON.stringify(job.state ?? {}),
           runtime_updated_at_ms: job.updatedAtMs,
+          schedule_identity:
+            tryCronScheduleIdentity(job as unknown as Record<string, unknown>) ?? null,
         })
         .where("store_key", "=", params.storeKey)
         .where("job_id", "=", job.id),

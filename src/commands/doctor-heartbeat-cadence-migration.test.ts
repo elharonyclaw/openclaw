@@ -174,8 +174,8 @@ describe("heartbeat cadence cron migration", () => {
     });
 
     expect(result.changes).toEqual(['Create heartbeat monitor for agent "research" at 15m.']);
-    expect(await loadMonitor(fixture.storePath, "research")).toBeDefined();
-    expect(await loadMonitor(fixture.storePath, "ops")).toBeUndefined();
+    expect(await loadMonitor(fixture.storePath, "research", fixture.env)).toBeDefined();
+    expect(await loadMonitor(fixture.storePath, "ops", fixture.env)).toBeUndefined();
   });
 
   it("keeps multi-agent updates and creates scoped to their declared monitors", async () => {

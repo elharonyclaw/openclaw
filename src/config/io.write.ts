@@ -193,14 +193,15 @@ export async function writeConfigFileFromContext(
   ];
   if (
     !topologyMaterialization.ownerAgentId &&
-    entersMultiAgent &&
+    writesOwnershipTopology &&
+    previousAgentCount === 1 &&
     previousSoleAgentId &&
     !previousSoleRemains &&
     keepsSameFixedSessionStore &&
     !nextConfig.agents?.defaults?.sessionStore?.agentId
   ) {
-    // A removed sole agent can still physically own unscoped fixed-store rows.
-    // Persist that compatibility owner even though it is no longer routable.
+    // A removed sole agent can still physically own unscoped fixed-store rows,
+    // including across a sole-to-sole swap. Preserve that storage owner only.
     nextConfig = {
       ...nextConfig,
       agents: {

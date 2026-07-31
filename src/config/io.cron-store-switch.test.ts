@@ -579,6 +579,26 @@ describe("cron store switch ownership guard", () => {
     expect(persisted.agents?.defaults?.sessionStore?.agentId).toBe("ops");
   });
 
+  it("retains a removed sole agent across a same-store sole replacement", async () => {
+    const sessionStore = path.join(tempDirs.make("openclaw-fixed-session-swap-"), "sessions.json");
+    const fixture = await createStoreSwitchFixture(
+      [cronJob("owned", "research")],
+      { entries: { ops: {} } },
+      {
+        sessionStore,
+        switchStore: false,
+        nextAgents: {
+          ownership: "explicit",
+          entries: { research: {} },
+        },
+      },
+    );
+
+    await expect(fixture.write()).resolves.toBeDefined();
+    const persisted = JSON.parse(await fs.readFile(fixture.configPath, "utf8")) as OpenClawConfig;
+    expect(persisted.agents?.defaults?.sessionStore?.agentId).toBe("ops");
+  });
+
   it("does not stamp a removed sole owner onto a different fixed session store", async () => {
     const root = tempDirs.make("openclaw-foreign-session-store-");
     const sourceSessionStore = path.join(root, "source-sessions.json");

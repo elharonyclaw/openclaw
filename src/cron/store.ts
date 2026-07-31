@@ -260,10 +260,8 @@ export async function saveCronJobsStore(
       },
       { env: opts?.env },
     );
-    // Publish the merged runtime snapshot only after SQLite has committed. Failed
-    // conflict, revision, and commit paths therefore leave the caller's store intact.
-    store.version = result.store.version;
-    store.jobs = structuredClone(result.store.jobs);
+    // The service layer owns publication into reference-stable live jobs. Keep this
+    // storage primitive side-effect free so it cannot detach timer-held job objects.
     return result;
   }
   assertCronStoreCanPersist(store);

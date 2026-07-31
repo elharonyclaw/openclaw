@@ -48,17 +48,22 @@ describe("cron state-only runtime deltas", () => {
     writerA.jobs[0]!.updatedAtMs = NOW + 101;
     writerB.jobs[1]!.state = { nextRunAtMs: 202 };
 
+    let writerBResult: Awaited<ReturnType<typeof saveCronJobsStore>> = undefined;
     for (const writer of [writerA, writerB]) {
-      await saveCronJobsStore(storePath, writer, {
+      const result = await saveCronJobsStore(storePath, writer, {
         stateOnly: true,
         expectedStoreEpoch: loaded.storeEpoch,
         expectedRuntimeRevision: loaded.runtimeRevision,
         expectedRuntimeStateByJobId: baseline.states,
         expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
       });
+      if (writer === writerB) {
+        writerBResult = result;
+      }
     }
-    expect(writerB.jobs[0]?.state.nextRunAtMs).toBe(101);
-    expect(writerB.jobs[0]?.updatedAtMs).toBe(NOW + 101);
+    expect(writerB.jobs[0]?.state.nextRunAtMs).toBeUndefined();
+    expect(writerBResult?.store.jobs[0]?.state.nextRunAtMs).toBe(101);
+    expect(writerBResult?.store.jobs[0]?.updatedAtMs).toBe(NOW + 101);
     expect((await loadCronStore(storePath)).jobs.map((entry) => entry.state.nextRunAtMs)).toEqual([
       101, 202,
     ]);
@@ -168,7 +173,7 @@ describe("cron state-only runtime deltas", () => {
       expectedRuntimeStateByJobId: baseline.states,
       expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
     });
-    await saveCronJobsStore(storePath, siblingWriter, {
+    const siblingResult = await saveCronJobsStore(storePath, siblingWriter, {
       stateOnly: true,
       expectedStoreEpoch: loaded.storeEpoch,
       expectedRuntimeRevision: loaded.runtimeRevision,
@@ -176,7 +181,8 @@ describe("cron state-only runtime deltas", () => {
       expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
     });
 
-    expect(siblingWriter.jobs[0]?.updatedAtMs).toBe(NOW + 101);
+    expect(siblingWriter.jobs[0]?.updatedAtMs).toBe(NOW);
+    expect(siblingResult?.store.jobs[0]?.updatedAtMs).toBe(NOW + 101);
     expect((await loadCronStore(storePath)).jobs.map((entry) => entry.updatedAtMs)).toEqual([
       NOW + 101,
       NOW + 202,

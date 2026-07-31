@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { stableStringify } from "../../agents/stable-stringify.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { normalizeOptionalAccountId } from "../../routing/account-id.js";
@@ -494,6 +495,42 @@ export class CronRuntimeRevisionMismatchError extends Error {
   }
 }
 
+export class CronStoreTopologyMismatchError extends Error {
+  constructor() {
+    super("cron store topology changed without advancing its epoch");
+    this.name = "CronStoreTopologyMismatchError";
+  }
+}
+
+/** Fingerprints all persisted topology, including order, while excluding mutable runtime columns. */
+export function cronRowTopologyFingerprint(row: CronJobRow): string {
+  const {
+    store_key: _storeKey,
+    updated_at: _updatedAt,
+    next_run_at_ms: _nextRunAtMs,
+    running_at_ms: _runningAtMs,
+    last_run_at_ms: _lastRunAtMs,
+    last_run_status: _lastRunStatus,
+    last_error: _lastError,
+    last_duration_ms: _lastDurationMs,
+    consecutive_errors: _consecutiveErrors,
+    consecutive_skipped: _consecutiveSkipped,
+    schedule_error_count: _scheduleErrorCount,
+    last_delivery_status: _lastDeliveryStatus,
+    last_delivery_error: _lastDeliveryError,
+    last_delivered: _lastDelivered,
+    last_failure_alert_at_ms: _lastFailureAlertAtMs,
+    state_json: _stateJson,
+    runtime_updated_at_ms: _runtimeUpdatedAtMs,
+    schedule_identity: _scheduleIdentity,
+    ...topologyRow
+  } = row;
+  const jobJson = parseJsonObject<Record<string, unknown>>(row.job_json, {});
+  delete jobJson.state;
+  delete jobJson.updatedAtMs;
+  return stableStringify({ ...topologyRow, job_json: jobJson });
+}
+
 function cronJobTopologyProjection(job: CronJob): Record<string, unknown> {
   const projected = stripJobRuntimeFields(job);
   if (job.schedule.kind === "every" && job.schedule.anchorMs === undefined) {
@@ -589,8 +626,10 @@ export function replaceCronRows(
   store: CronStoreFile,
   options?: {
     expectedStoreEpoch?: number;
+    expectedTopologyFingerprintByJobId?: ReadonlyMap<string, string>;
     expectedRuntimeRevision?: number;
     expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
+    expectedRuntimeUpdatedAtMsByJobId?: ReadonlyMap<string, number>;
     bumpStoreEpoch?: boolean;
   },
 ): number {
@@ -606,20 +645,45 @@ export function replaceCronRows(
   ) {
     throw new CronStoreEpochMismatchError(options.expectedStoreEpoch, currentStoreEpoch);
   }
+  if (options?.expectedTopologyFingerprintByJobId) {
+    const currentTopology = new Map(
+      currentRows.map((row) => [row.job_id, cronRowTopologyFingerprint(row)]),
+    );
+    if (
+      currentTopology.size !== options.expectedTopologyFingerprintByJobId.size ||
+      [...currentTopology].some(
+        ([jobId, fingerprint]) =>
+          options.expectedTopologyFingerprintByJobId?.get(jobId) !== fingerprint,
+      )
+    ) {
+      throw new CronStoreTopologyMismatchError();
+    }
+  }
   const currentRowsByJobId = new Map(currentRows.map((row) => [row.job_id, row]));
   const expectedRuntimeRevision = options?.expectedRuntimeRevision;
   const expectedRuntimeStateByJobId = options?.expectedRuntimeStateByJobId;
+  const expectedRuntimeUpdatedAtMsByJobId = options?.expectedRuntimeUpdatedAtMsByJobId;
   const preserveCurrentRuntime =
+    expectedRuntimeStateByJobId !== undefined && expectedRuntimeUpdatedAtMsByJobId !== undefined;
+  const runtimeRevisionChanged =
     expectedRuntimeRevision !== undefined && expectedRuntimeRevision !== currentRuntimeRevision;
   if (
-    preserveCurrentRuntime &&
+    (runtimeRevisionChanged ||
+      expectedRuntimeStateByJobId !== undefined ||
+      expectedRuntimeUpdatedAtMsByJobId !== undefined) &&
     store.jobs.some(
-      (job) => currentRowsByJobId.has(job.id) && expectedRuntimeStateByJobId?.has(job.id) !== true,
+      (job) =>
+        currentRowsByJobId.has(job.id) &&
+        (expectedRuntimeStateByJobId?.has(job.id) !== true ||
+          expectedRuntimeUpdatedAtMsByJobId?.has(job.id) !== true),
     )
   ) {
-    // A row that appeared without a per-job baseline is an ambiguous concurrent creation.
-    // Reject the full snapshot so it cannot overwrite runtime state the caller never loaded.
-    throw new CronRuntimeRevisionMismatchError(expectedRuntimeRevision, currentRuntimeRevision);
+    // A persisted row without a complete per-job baseline is ambiguous. Reject the
+    // full snapshot so it cannot overwrite runtime state the caller never loaded.
+    throw new CronRuntimeRevisionMismatchError(
+      expectedRuntimeRevision ?? currentRuntimeRevision,
+      currentRuntimeRevision,
+    );
   }
   const topologyChanged = !cronStoreTopologyMatches(currentRows, store);
   const nextStoreEpoch =
@@ -643,19 +707,27 @@ export function replaceCronRows(
     const currentRow = currentRowsByJobId.get(normalized.id);
     const expectedRuntimeState = expectedRuntimeStateByJobId?.get(normalized.id);
     const hasRuntimeBaseline = expectedRuntimeStateByJobId?.has(normalized.id) === true;
-    const persisted =
+    const expectedRuntimeUpdatedAtMs = expectedRuntimeUpdatedAtMsByJobId?.get(normalized.id);
+    const merged =
       !preserveCurrentRuntime || !currentRow || !hasRuntimeBaseline
         ? normalized
         : preserveConcurrentCronRuntime({
             current: rowToCronJob(currentRow) ?? undefined,
             next: normalized,
             expectedRuntimeState: expectedRuntimeState ?? {},
+            expectedRuntimeUpdatedAtMs: expectedRuntimeUpdatedAtMs ?? normalized.updatedAtMs,
           });
+    if (!merged) {
+      throw new CronRuntimeRevisionMismatchError(
+        expectedRuntimeRevision ?? currentRuntimeRevision,
+        currentRuntimeRevision,
+      );
+    }
     executeSqliteQuerySync(
       db,
       getCronStoreKysely(db)
         .insertInto("cron_jobs")
-        .values(bindCronJobRow(storeKey, persisted, index)),
+        .values(bindCronJobRow(storeKey, merged, index)),
     );
   }
   incrementCronRuntimeRevision(db, storeKey);
@@ -713,6 +785,12 @@ export function updateCronRuntimeRows(
       currentRuntimeRevision,
       expectedRuntimeStateByJobId: options?.expectedRuntimeStateByJobId,
       expectedRuntimeUpdatedAtMsByJobId: options?.expectedRuntimeUpdatedAtMsByJobId,
+      scheduleIdentityFromRow: (row) => {
+        const current = rowToCronJob(row);
+        return current
+          ? tryCronScheduleIdentity(current as unknown as Record<string, unknown>)
+          : undefined;
+      },
       conflictError: () =>
         new CronRuntimeRevisionMismatchError(
           expectedRuntimeRevision ?? 0,
@@ -747,6 +825,9 @@ export function loadedCronStoreFromRows(
   }));
   return {
     store: { version: 1, jobs },
+    topologyFingerprintByJobId: new Map(
+      rows.map((row) => [row.job_id, cronRowTopologyFingerprint(row)]),
+    ),
     storeEpoch,
     runtimeRevision,
     configJobs,

@@ -197,6 +197,7 @@ describe("cron store epoch", () => {
       const epoch = readCronStoreEpoch(database, storeKey);
       const runtimeRevision = readCronRuntimeRevision(database, storeKey);
       const runtimeBaseline = new Map([[job.id, structuredClone(job.state)]]);
+      const runtimeUpdatedAtBaseline = new Map([[job.id, job.updatedAtMs]]);
       updateCronRuntimeRows(database, storeKey, {
         version: 1,
         jobs: [
@@ -238,6 +239,7 @@ describe("cron store epoch", () => {
             expectedStoreEpoch: epoch,
             expectedRuntimeRevision: runtimeRevision,
             expectedRuntimeStateByJobId: runtimeBaseline,
+            expectedRuntimeUpdatedAtMsByJobId: runtimeUpdatedAtBaseline,
             bumpStoreEpoch: true,
           },
         ),
@@ -253,9 +255,11 @@ describe("cron store epoch", () => {
 
       const renamedRevision = readCronRuntimeRevision(database, storeKey);
       const renamedRuntimeBaseline = new Map([[renamed!.id, structuredClone(renamed!.state)]]);
+      const renamedUpdatedAtBaseline = new Map([[renamed!.id, renamed!.updatedAtMs]]);
+      const runningAtMs = runtimeNextRunAtMs + 1;
       updateCronRuntimeRows(database, storeKey, {
         version: 1,
-        jobs: [{ ...renamed!, state: { nextRunAtMs: runtimeNextRunAtMs + 60_000 } }],
+        jobs: [{ ...renamed!, state: { ...renamed!.state, runningAtMs } }],
       });
       replaceCronRows(
         database,
@@ -266,7 +270,7 @@ describe("cron store epoch", () => {
             {
               ...renamed!,
               schedule: { kind: "every", everyMs: 120_000 },
-              state: {},
+              state: { ...renamed!.state, nextRunAtMs: undefined },
             },
           ],
         },
@@ -274,12 +278,16 @@ describe("cron store epoch", () => {
           expectedStoreEpoch: epoch + 1,
           expectedRuntimeRevision: renamedRevision,
           expectedRuntimeStateByJobId: renamedRuntimeBaseline,
+          expectedRuntimeUpdatedAtMsByJobId: renamedUpdatedAtBaseline,
           bumpStoreEpoch: true,
         },
       );
       expect(
         loadedCronStoreFromRows(loadCronRows(database, storeKey)).store.jobs[0]?.state,
-      ).toEqual({});
+      ).toMatchObject({ lastStatus: "ok", runningAtMs });
+      expect(
+        loadedCronStoreFromRows(loadCronRows(database, storeKey)).store.jobs[0]?.state.nextRunAtMs,
+      ).toBeUndefined();
     } finally {
       handle.walMaintenance.close();
       database.close();
@@ -298,6 +306,7 @@ describe("cron store epoch", () => {
       const epoch = readCronStoreEpoch(database, storeKey);
       const runtimeRevision = readCronRuntimeRevision(database, storeKey);
       const runtimeBaseline = new Map([[job.id, structuredClone(job.state)]]);
+      const runtimeUpdatedAtBaseline = new Map([[job.id, job.updatedAtMs]]);
       const advancedUpdatedAtMs = job.updatedAtMs + 60_000;
       updateCronRuntimeRows(database, storeKey, {
         version: 1,
@@ -312,6 +321,7 @@ describe("cron store epoch", () => {
           expectedStoreEpoch: epoch,
           expectedRuntimeRevision: runtimeRevision,
           expectedRuntimeStateByJobId: runtimeBaseline,
+          expectedRuntimeUpdatedAtMsByJobId: runtimeUpdatedAtBaseline,
           bumpStoreEpoch: true,
         },
       );

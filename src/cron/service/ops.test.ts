@@ -558,6 +558,7 @@ describe("cron service ops seam coverage", () => {
         configJobIndexes: [0],
         legacyImportedJobIndexes: [0],
         configJobRuntimeEntries: [],
+        topologyFingerprintByJobId: new Map(),
         invalidConfigRows: [],
       });
     const state = createCronServiceState({
@@ -623,6 +624,7 @@ describe("cron service ops seam coverage", () => {
         configJobIndexes: [0],
         legacyImportedJobIndexes: [0],
         configJobRuntimeEntries: [],
+        topologyFingerprintByJobId: new Map(),
         invalidConfigRows: [],
       });
     const state = createCronServiceState({
@@ -715,6 +717,7 @@ describe("cron service ops seam coverage", () => {
         configJobIndexes: [0],
         legacyImportedJobIndexes: [0],
         configJobRuntimeEntries: [],
+        topologyFingerprintByJobId: new Map(),
         invalidConfigRows: [],
       });
     const migrationSpy = vi

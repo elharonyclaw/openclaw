@@ -1,6 +1,7 @@
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
+import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
 import { retainLegacyDefaultAgentId } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { loadCombinedSessionStoreForGateway } from "./combined-store-gateway.js";
@@ -62,6 +63,12 @@ describe("retained legacy session ownership", () => {
           updateMode: "none",
         }),
       ).resolves.toMatchObject({ appendedCount: 0 });
+      await expect(
+        persistSessionTranscriptTurn(
+          { ...scope, agentId: "" },
+          { config: cfg, messages: [], updateMode: "none" },
+        ),
+      ).resolves.toMatchObject({ appendedCount: 0 });
     });
   });
 
@@ -117,7 +124,7 @@ describe("retained legacy session ownership", () => {
 
     await expect(
       persistSessionTranscriptTurn(scope, { config: cfg, messages: [], updateMode: "none" }),
-    ).rejects.toThrow("Session key does not contain an agent id");
+    ).rejects.toBeInstanceOf(AgentSelectionRequiredError);
     await expect(
       persistSessionTranscriptTurn(scope, {
         config: cfg,
@@ -125,6 +132,30 @@ describe("retained legacy session ownership", () => {
         messages: [],
         updateMode: "none",
       }),
-    ).rejects.toThrow("Session key does not contain an agent id");
+    ).rejects.toBeInstanceOf(AgentSelectionRequiredError);
+  });
+
+  it("requires an owner for bare transcript turns in an explicit fixed store", async () => {
+    const cfg = {
+      agents: { ownership: "explicit", entries: { ops: {}, research: {} } },
+      session: { store: "/tmp/openclaw/shared-sessions.json" },
+    } satisfies OpenClawConfig;
+    const scope = {
+      sessionId: "ownerless-fixed-session",
+      sessionKey: "main",
+      storePath: "/tmp/openclaw/shared-sessions.json",
+    };
+
+    await expect(
+      persistSessionTranscriptTurn(scope, { config: cfg, messages: [], updateMode: "none" }),
+    ).rejects.toBeInstanceOf(AgentSelectionRequiredError);
+    await expect(
+      persistSessionTranscriptTurn(scope, {
+        config: cfg,
+        expectedSessionId: scope.sessionId,
+        messages: [],
+        updateMode: "none",
+      }),
+    ).rejects.toBeInstanceOf(AgentSelectionRequiredError);
   });
 });

@@ -1,72 +1,77 @@
 import { isDeepStrictEqual } from "node:util";
-import { tryCronScheduleIdentity } from "../schedule-identity.js";
 import type { CronJob } from "../types.js";
 
-type CronRuntimeDeltaResolution = "write" | "preserve" | "conflict";
+function fieldsEqual(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+  key: string,
+): boolean {
+  return (
+    Object.hasOwn(left, key) === Object.hasOwn(right, key) &&
+    isDeepStrictEqual(left[key], right[key])
+  );
+}
 
-/** Resolves one state-only delta against the row state the caller originally loaded. */
-export function resolveCronRuntimeDelta(params: {
+function copyField(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  key: string,
+): void {
+  if (Object.hasOwn(source, key)) {
+    target[key] = structuredClone(source[key]);
+  } else {
+    delete target[key];
+  }
+}
+
+/** Three-way merges runtime state so disjoint caller and concurrent fields both survive. */
+export function mergeCronRuntimeStateFields(params: {
   current: CronJob["state"];
   next: CronJob["state"];
   expected: CronJob["state"];
-  currentUpdatedAtMs: number;
-  nextUpdatedAtMs: number;
-  expectedUpdatedAtMs: number;
-}): CronRuntimeDeltaResolution {
-  const currentChanged =
-    !isDeepStrictEqual(params.current, params.expected) ||
-    params.currentUpdatedAtMs !== params.expectedUpdatedAtMs;
-  const nextChanged =
-    !isDeepStrictEqual(params.next, params.expected) ||
-    params.nextUpdatedAtMs !== params.expectedUpdatedAtMs;
-  if (!currentChanged) {
-    return "write";
+}): CronJob["state"] | undefined {
+  const expected = (params.expected ?? {}) as Record<string, unknown>;
+  const current = (params.current ?? {}) as Record<string, unknown>;
+  const next = (params.next ?? {}) as Record<string, unknown>;
+  const merged = structuredClone(next);
+  for (const key of new Set([
+    ...Object.keys(expected),
+    ...Object.keys(current),
+    ...Object.keys(next),
+  ])) {
+    const currentChanged = !fieldsEqual(current, expected, key);
+    const nextChanged = !fieldsEqual(next, expected, key);
+    if (currentChanged && nextChanged && !fieldsEqual(current, next, key)) {
+      return undefined;
+    }
+    if (currentChanged && !nextChanged) {
+      copyField(merged, current, key);
+    }
   }
-  if (
-    !nextChanged ||
-    (isDeepStrictEqual(params.current, params.next) &&
-      params.currentUpdatedAtMs === params.nextUpdatedAtMs)
-  ) {
-    return "preserve";
-  }
-  return "conflict";
+  return merged;
 }
 
-function runtimePreservationIdentity(
-  job: CronJob,
-): { id: string; schedulingIdentity: string } | undefined {
-  // The canonical scheduling identity includes enabled, schedule, pacing, and trigger presence.
-  const schedulingIdentity = tryCronScheduleIdentity(job as unknown as Record<string, unknown>);
-  return schedulingIdentity ? { id: job.id, schedulingIdentity } : undefined;
-}
-
-/** Preserves a concurrent runtime-only write when the full-save caller left that state untouched. */
+/** Three-way merges runtime fields; undefined means both writers changed one field differently. */
 export function preserveConcurrentCronRuntime(params: {
   current: CronJob | undefined;
   next: CronJob;
   expectedRuntimeState: CronJob["state"];
-}): CronJob {
-  const currentIdentity = params.current ? runtimePreservationIdentity(params.current) : undefined;
-  const nextIdentity = runtimePreservationIdentity(params.next);
-  if (
-    !params.current ||
-    !currentIdentity ||
-    !nextIdentity ||
-    currentIdentity.id !== nextIdentity.id ||
-    currentIdentity.schedulingIdentity !== nextIdentity.schedulingIdentity
-  ) {
+  expectedRuntimeUpdatedAtMs: number;
+}): CronJob | undefined {
+  if (!params.current || params.current.id !== params.next.id) {
     return params.next;
   }
-  const incomingState = params.next.state ?? {};
-  const currentState = params.current.state ?? {};
-  if (!isDeepStrictEqual(incomingState, params.expectedRuntimeState)) {
-    return params.next;
+  const merged = mergeCronRuntimeStateFields({
+    current: params.current.state ?? {},
+    next: params.next.state ?? {},
+    expected: params.expectedRuntimeState ?? {},
+  });
+  if (!merged) {
+    return undefined;
   }
-  // An unchanged incoming state cannot own a concurrent runtime timestamp. Preserve
-  // the newest metadata even when the other writer changed only updatedAtMs.
   return {
     ...params.next,
     updatedAtMs: Math.max(params.next.updatedAtMs, params.current.updatedAtMs),
-    state: structuredClone(currentState),
+    state: merged,
   };
 }

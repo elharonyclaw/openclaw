@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import { tryCronScheduleIdentity } from "./schedule-identity.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import {
   CronRuntimeRevisionMismatchError,
+  CronStoreTopologyMismatchError,
   loadCronJobsStoreWithConfigJobs,
   loadCronStore,
   saveCronJobsStore,
@@ -41,6 +43,83 @@ function runtimeBaseline(store: CronStoreFile) {
 }
 
 describe("cron state-only runtime deltas", () => {
+  it("rejects a stale full save after a revision-blind topology edit", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const baseline = runtimeBaseline(loaded.store);
+    const stale = structuredClone(loaded.store);
+    stale.jobs[1]!.name = "caller edit";
+
+    runOpenClawStateWriteTransaction(({ db }) => {
+      const legacyEdit = { ...job("runtime-a"), name: "legacy edit", state: {} };
+      executeSqliteQuerySync(
+        db,
+        getCronStoreKysely(db)
+          .updateTable("cron_jobs")
+          .set({ name: legacyEdit.name, job_json: JSON.stringify(legacyEdit) })
+          .where("store_key", "=", cronStoreKey(storePath))
+          .where("job_id", "=", legacyEdit.id),
+      );
+    });
+
+    await expect(
+      saveCronJobsStore(storePath, stale, {
+        expectedStoreEpoch: loaded.storeEpoch,
+        expectedTopologyFingerprintByJobId: loaded.topologyFingerprintByJobId,
+        expectedRuntimeRevision: loaded.runtimeRevision,
+        expectedRuntimeStateByJobId: baseline.states,
+        expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
+      }),
+    ).rejects.toBeInstanceOf(CronStoreTopologyMismatchError);
+    expect((await loadCronStore(storePath)).jobs.map((entry) => entry.name)).toEqual([
+      "legacy edit",
+      "runtime-b",
+    ]);
+  });
+
+  it("rejects stale runtime state after a revision-blind schedule edit", async () => {
+    const { storePath } = await makeStorePath();
+    const original = job("runtime-a");
+    await saveCronStore(storePath, { version: 1, jobs: [original] });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const baseline = runtimeBaseline(loaded.store);
+    const stale = structuredClone(loaded.store);
+    stale.jobs[0]!.state = { nextRunAtMs: NOW + 60_000 };
+    const legacyEdit = { ...original, schedule: { kind: "every" as const, everyMs: 120_000 } };
+    const legacyScheduleIdentity = tryCronScheduleIdentity(legacyEdit)!;
+
+    runOpenClawStateWriteTransaction(({ db }) => {
+      executeSqliteQuerySync(
+        db,
+        getCronStoreKysely(db)
+          .updateTable("cron_jobs")
+          .set({
+            every_ms: 120_000,
+            job_json: JSON.stringify({ ...legacyEdit, state: {} }),
+            schedule_identity: legacyScheduleIdentity,
+          })
+          .where("store_key", "=", cronStoreKey(storePath))
+          .where("job_id", "=", original.id),
+      );
+    });
+
+    await expect(
+      saveCronJobsStore(storePath, stale, {
+        stateOnly: true,
+        expectedStoreEpoch: loaded.storeEpoch,
+        expectedRuntimeRevision: loaded.runtimeRevision,
+        expectedRuntimeStateByJobId: baseline.states,
+        expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
+      }),
+    ).rejects.toBeInstanceOf(CronRuntimeRevisionMismatchError);
+    expect(
+      loadCronJobsStoreWithConfigJobs(storePath).then(
+        (current) => current.configJobRuntimeEntries[0]?.scheduleIdentity,
+      ),
+    ).resolves.toBe(legacyScheduleIdentity);
+  });
+
   it("preserves an out-of-band sibling update when the aggregate revision matches", async () => {
     const { storePath } = await makeStorePath();
     await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });

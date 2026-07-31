@@ -60,12 +60,24 @@ export function tryResolveLegacyCompatibilityAgentId(config: OpenClawConfig): st
   return tryResolveSoleAgentId(config);
 }
 
-/** Resolves the physical owner of unscoped rows in a fixed legacy session store. */
-export function resolveSessionStoreCompatibilityAgentId(config: OpenClawConfig): string {
+/** Resolves the physical owner of unscoped fixed-store rows without inventing one for explicit fleets. */
+export function tryResolveSessionStoreCompatibilityAgentId(
+  config: OpenClawConfig,
+): string | undefined {
   const persistedAgentId = config.agents?.defaults?.sessionStore?.agentId?.trim();
-  return persistedAgentId
-    ? normalizeAgentId(persistedAgentId)
-    : (tryResolveLegacyCompatibilityAgentId(config) ?? "main");
+  if (persistedAgentId) {
+    return normalizeAgentId(persistedAgentId);
+  }
+  const compatibilityAgentId = tryResolveLegacyCompatibilityAgentId(config);
+  if (compatibilityAgentId || config.agents?.ownership === "explicit") {
+    return compatibilityAgentId;
+  }
+  return "main";
+}
+
+/** Resolves the physical owner where the shipped legacy-main fallback remains required. */
+export function resolveSessionStoreCompatibilityAgentId(config: OpenClawConfig): string {
+  return tryResolveSessionStoreCompatibilityAgentId(config) ?? "main";
 }
 
 /** Adds per-surface warnings while a legacy first-entry owner is retained. */

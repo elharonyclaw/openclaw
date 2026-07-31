@@ -7,6 +7,7 @@ import { isInvalidCronSessionTargetIdError } from "../session-target.js";
 import {
   CronRuntimeRevisionMismatchError,
   CronStoreEpochMismatchError,
+  CronStoreTopologyMismatchError,
   loadCronJobsStoreWithConfigJobs,
   saveCronQuarantineFile,
   saveCronJobsStore,
@@ -25,6 +26,7 @@ type PersistOptions = {
 export type CronRollbackSnapshot = {
   store: CronStoreFile | null;
   storeEpoch: number;
+  durableTopologyFingerprintByJobId: Map<string, string>;
   runtimeRevision: number;
   durableNextRunAtMsByJobId: Map<string, number | undefined>;
   durableRuntimeStateByJobId: Map<string, CronJob["state"]>;
@@ -279,6 +281,7 @@ export async function ensureLoaded(
     jobs,
   };
   state.storeEpoch = loaded.storeEpoch;
+  state.durableTopologyFingerprintByJobId = new Map(loaded.topologyFingerprintByJobId);
   state.runtimeRevision = loaded.runtimeRevision;
   state.legacyImportedJobIds = legacyImportedJobIds;
   state.durableNextRunAtMsByJobId = durableNextRunAtMsByJobId;
@@ -363,14 +366,17 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
           }
         : {
             expectedStoreEpoch: state.storeEpoch,
+            expectedTopologyFingerprintByJobId: state.durableTopologyFingerprintByJobId,
             expectedRuntimeRevision: state.runtimeRevision,
             expectedRuntimeStateByJobId: state.durableRuntimeStateByJobId,
+            expectedRuntimeUpdatedAtMsByJobId: state.durableRuntimeUpdatedAtMsByJobId,
             env: state.deps.env,
           },
     );
     if (committed) {
       state.storeEpoch = committed.storeEpoch;
       state.runtimeRevision = committed.runtimeRevision;
+      state.durableTopologyFingerprintByJobId = new Map(committed.topologyFingerprintByJobId);
       // The canonical store can differ even without a revision bump when a pre-upgrade
       // writer changes rows. Always publish it so stale topology cannot be resurrected.
       persistedStore = mergeCommittedCronStoreIntoLive(store, committed.store);
@@ -383,6 +389,7 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
   } catch (error) {
     if (
       error instanceof CronStoreEpochMismatchError ||
+      error instanceof CronStoreTopologyMismatchError ||
       error instanceof CronRuntimeRevisionMismatchError
     ) {
       // Another process changed ownership/topology. Refuse this stale snapshot
@@ -402,9 +409,8 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
           if (repaired) {
             state.storeEpoch = repaired.storeEpoch;
             state.runtimeRevision = repaired.runtimeRevision;
-            const repairedStore = repaired.runtimeMerged
-              ? mergeCommittedCronStoreIntoLive(state.store, repaired.store)
-              : state.store;
+            state.durableTopologyFingerprintByJobId = new Map(repaired.topologyFingerprintByJobId);
+            const repairedStore = mergeCommittedCronStoreIntoLive(state.store, repaired.store);
             state.store = repairedStore;
             state.durableRuntimeStateByJobId = snapshotRuntimeStateByJobId(repaired.store.jobs);
             state.durableRuntimeUpdatedAtMsByJobId = snapshotRuntimeUpdatedAtMsByJobId(
@@ -427,10 +433,11 @@ export async function persist(state: CronServiceState, opts?: PersistOptions) {
         state.store = null;
         if (error instanceof CronStoreEpochMismatchError) {
           state.storeEpoch = error.actualEpoch;
-        } else {
+        } else if (error instanceof CronRuntimeRevisionMismatchError) {
           state.runtimeRevision = error.actualRevision;
         }
         state.durableNextRunAtMsByJobId = new Map();
+        state.durableTopologyFingerprintByJobId = new Map();
         state.durableRuntimeStateByJobId = new Map();
         state.durableRuntimeUpdatedAtMsByJobId = new Map();
         state.deps.log.warn(
@@ -458,6 +465,7 @@ export function snapshotStoreForRollback(state: CronServiceState): CronRollbackS
   return {
     store: state.store ? structuredClone(state.store) : null,
     storeEpoch: state.storeEpoch,
+    durableTopologyFingerprintByJobId: new Map(state.durableTopologyFingerprintByJobId),
     runtimeRevision: state.runtimeRevision,
     durableNextRunAtMsByJobId: new Map(state.durableNextRunAtMsByJobId),
     durableRuntimeStateByJobId: new Map(
@@ -493,10 +501,12 @@ export async function persistOrRestore(
   } catch (err) {
     if (
       !(err instanceof CronStoreEpochMismatchError) &&
+      !(err instanceof CronStoreTopologyMismatchError) &&
       !(err instanceof CronRuntimeRevisionMismatchError)
     ) {
       state.store = snapshot.store;
       state.storeEpoch = snapshot.storeEpoch;
+      state.durableTopologyFingerprintByJobId = snapshot.durableTopologyFingerprintByJobId;
       state.runtimeRevision = snapshot.runtimeRevision;
       state.durableNextRunAtMsByJobId = snapshot.durableNextRunAtMsByJobId;
       state.durableRuntimeStateByJobId = snapshot.durableRuntimeStateByJobId;

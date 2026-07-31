@@ -628,6 +628,7 @@ export async function loadLegacyCronStoreForMigration(
 
     return {
       store,
+      topologyFingerprintByJobId: new Map(),
       storeEpoch: 0,
       runtimeRevision: 0,
       configJobs,
@@ -647,6 +648,7 @@ export async function loadLegacyCronStoreForMigration(
     if ((err as { code?: unknown })?.code === "ENOENT") {
       return {
         store: { version: 1, jobs: [] },
+        topologyFingerprintByJobId: new Map(),
         storeEpoch: 0,
         runtimeRevision: 0,
         configJobs: [],

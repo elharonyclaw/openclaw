@@ -255,6 +255,7 @@ export function createMockCronStateForJobs(params: {
   return {
     store: { version: 1, jobs: params.jobs },
     storeEpoch: 0,
+    durableTopologyFingerprintByJobId: new Map<string, string>(),
     runtimeRevision: 0,
     durableNextRunAtMsByJobId: new Map<string, number | undefined>(),
     durableRuntimeStateByJobId: new Map(

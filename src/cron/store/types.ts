@@ -28,6 +28,8 @@ export type CronConfigJobRuntimeEntry = {
 /** Combined cron store load result with canonical jobs and config-backed metadata. */
 export type LoadedCronStore = {
   store: CronStoreFile;
+  /** Caller-loaded topology fingerprint for detecting revision-blind legacy writers. */
+  topologyFingerprintByJobId: Map<string, string>;
   /** Cross-process revision for full-store topology writes. */
   storeEpoch: number;
   /** Cross-process revision for runtime-only state writes. */

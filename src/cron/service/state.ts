@@ -256,6 +256,8 @@ export type CronServiceState = {
   store: CronStoreFile | null;
   /** Epoch read with the current in-memory topology. */
   storeEpoch: number;
+  /** Per-row topology loaded with storeEpoch, including revision-blind legacy writes. */
+  durableTopologyFingerprintByJobId: Map<string, string>;
   /** Runtime-only revision read with the current in-memory state. */
   runtimeRevision: number;
   /** Previous retained owner while a Gateway config candidate is prepared. */
@@ -312,6 +314,7 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
     deps: { ...deps, defaultAgentId, nowMs: deps.nowMs ?? (() => Date.now()) },
     store: null,
     storeEpoch: 0,
+    durableTopologyFingerprintByJobId: new Map<string, string>(),
     runtimeRevision: 0,
     durableNextRunAtMsByJobId: new Map<string, number | undefined>(),
     durableRuntimeStateByJobId: new Map<string, CronJob["state"]>(),

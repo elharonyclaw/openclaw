@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { AgentSelectionRequiredError, listAgentIds } from "../../agents/agent-scope-config.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { getRuntimeConfig } from "../io.js";
 import {
-  resolveSessionStoreCompatibilityAgentId,
+  tryResolveSessionStoreCompatibilityAgentId,
   tryResolveLegacyCompatibilityAgentId,
 } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
@@ -36,7 +37,29 @@ import type { SessionEntry } from "./types.js";
 function resolveTranscriptCompatibilityAgentId(config: OpenClawConfig): string | undefined {
   return isPerAgentSessionStoreConfig(config.session?.store)
     ? tryResolveLegacyCompatibilityAgentId(config)
-    : resolveSessionStoreCompatibilityAgentId(config);
+    : tryResolveSessionStoreCompatibilityAgentId(config);
+}
+
+function resolveTranscriptTurnAgentId(params: {
+  config: OpenClawConfig;
+  scopeAgentId?: string;
+  sessionKey: string;
+}): string {
+  const scopedAgentId = params.scopeAgentId?.trim() || undefined;
+  const compatibilityAgentId = resolveTranscriptCompatibilityAgentId(params.config);
+  if (
+    !scopedAgentId &&
+    !compatibilityAgentId &&
+    !params.sessionKey.trim().toLowerCase().startsWith("agent:")
+  ) {
+    throw new AgentSelectionRequiredError(listAgentIds(params.config), {
+      surface: "transcript turn persistence",
+      hint: "Pass an agentId or use an agent-qualified session key.",
+    });
+  }
+  const agentId =
+    scopedAgentId ?? resolveAgentIdFromSessionKey(params.sessionKey, compatibilityAgentId);
+  return agentId;
 }
 
 /** Appends one prepared ordered group in the existing transcript turn transaction. */
@@ -198,15 +221,11 @@ async function persistExpectedSessionTranscriptTurn(
   }
   const storePath = scope.storePath;
   const expectedSessionId = options.expectedSessionId;
-  const agentId =
-    scope.agentId ??
-    resolveAgentIdFromSessionKey(
-      sessionKey,
-      resolveTranscriptCompatibilityAgentId(options.config ?? getRuntimeConfig()),
-    );
-  if (!agentId) {
-    throw new Error(`Cannot resolve transcript turn without an agent id: ${sessionKey}`);
-  }
+  const agentId = resolveTranscriptTurnAgentId({
+    config: options.config ?? getRuntimeConfig(),
+    scopeAgentId: scope.agentId,
+    sessionKey,
+  });
   const resolved = scope.sessionStore
     ? resolveSessionEntryFromStore({ store: scope.sessionStore, sessionKey })
     : resolveSessionEntrySelection({
@@ -292,12 +311,11 @@ async function resolveTranscriptTurnTarget(
   if (!sessionKey || !scope.sessionId) {
     throw new Error("Cannot persist a transcript turn without a session key and session id");
   }
-  const agentId =
-    scope.agentId ??
-    resolveAgentIdFromSessionKey(
-      sessionKey,
-      resolveTranscriptCompatibilityAgentId(config ?? getRuntimeConfig()),
-    );
+  const agentId = resolveTranscriptTurnAgentId({
+    config: config ?? getRuntimeConfig(),
+    scopeAgentId: scope.agentId,
+    sessionKey,
+  });
   if (!agentId) {
     throw new Error(`Cannot resolve transcript turn without an agent id: ${sessionKey}`);
   }

@@ -3,8 +3,8 @@ import { isDeepStrictEqual } from "node:util";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { tryCronScheduleIdentity } from "../schedule-identity.js";
 import type { CronJob, CronStoreFile } from "../types.js";
-import { resolveCronRuntimeDelta } from "./runtime-merge.js";
-import { getCronStoreKysely } from "./schema.js";
+import { mergeCronRuntimeStateFields } from "./runtime-merge.js";
+import { getCronStoreKysely, type CronJobRow } from "./schema.js";
 import { bindStateColumns, stateFromRow } from "./state-codec.js";
 
 /** Applies state-only writes as per-job deltas when another process advanced the partition. */
@@ -16,6 +16,7 @@ export function writeCronRuntimeRowDeltas(params: {
   currentRuntimeRevision?: number;
   expectedRuntimeStateByJobId?: ReadonlyMap<string, CronJob["state"] | undefined>;
   expectedRuntimeUpdatedAtMsByJobId?: ReadonlyMap<string, number>;
+  scheduleIdentityFromRow: (row: CronJobRow) => string | undefined;
   conflictError: () => Error;
   incrementRevision: () => number;
 }): number {
@@ -42,7 +43,8 @@ export function writeCronRuntimeRowDeltas(params: {
           {
             state: stateFromRow(row),
             updatedAtMs: row.runtime_updated_at_ms ?? row.updated_at,
-            scheduleIdentity: row.schedule_identity,
+            persistedScheduleIdentity: row.schedule_identity,
+            schedulingIdentity: params.scheduleIdentityFromRow(row),
           },
         ]),
       )
@@ -71,30 +73,29 @@ export function writeCronRuntimeRowDeltas(params: {
     const expectedUpdatedAtMs = params.expectedRuntimeUpdatedAtMsByJobId!.get(job.id)!;
     const scheduleIdentity =
       tryCronScheduleIdentity(job as unknown as Record<string, unknown>) ?? null;
+    if ((current.schedulingIdentity ?? null) !== scheduleIdentity) {
+      // The row's current schedule, not its possibly stale identity column, is authoritative.
+      throw params.conflictError();
+    }
     const localRuntimeChanged =
       !isDeepStrictEqual(job.state ?? {}, expected) || job.updatedAtMs !== expectedUpdatedAtMs;
     if (!localRuntimeChanged) {
-      if (current.scheduleIdentity !== scheduleIdentity) {
+      if (current.persistedScheduleIdentity !== scheduleIdentity) {
         scheduleIdentitiesToRepair.push({ jobId: job.id, scheduleIdentity });
       }
       continue;
     }
-    const resolution = resolveCronRuntimeDelta({
+    const mergedState = mergeCronRuntimeStateFields({
       current: current.state,
       next: job.state ?? {},
       expected,
-      currentUpdatedAtMs: current.updatedAtMs,
-      nextUpdatedAtMs: job.updatedAtMs,
-      expectedUpdatedAtMs,
     });
-    if (resolution === "conflict") {
+    if (!mergedState) {
       throw params.conflictError();
     }
-    if (resolution === "write") {
-      runtimeJobsToWrite.push(job);
-    } else if (current.scheduleIdentity !== scheduleIdentity) {
-      scheduleIdentitiesToRepair.push({ jobId: job.id, scheduleIdentity });
-    }
+    job.state = mergedState;
+    job.updatedAtMs = Math.max(job.updatedAtMs, current.updatedAtMs);
+    runtimeJobsToWrite.push(job);
   }
   // Resolve every job before the first row write. Direct callers therefore cannot
   // persist an early delta when a later job proves the snapshot is conflicting.

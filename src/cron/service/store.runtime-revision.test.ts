@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { setupCronServiceSuite } from "../service.test-harness.js";
-import { loadCronStore, saveCronStore } from "../store.js";
+import * as cronStoreModule from "../store.js";
+import { CronStoreEpochMismatchError, loadCronStore, saveCronStore } from "../store.js";
+import { cronStoreKey } from "../store/key.js";
+import { getCronStoreKysely } from "../store/schema.js";
 import type { CronJob } from "../types.js";
 import { createCronServiceState } from "./state.js";
 import { ensureLoaded, persist } from "./store.js";
@@ -26,6 +31,54 @@ function job(id: string): CronJob {
 }
 
 describe("cron service runtime revisions", () => {
+  it("publishes a revision-quiet preserved value before the next persist", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("revision-quiet")] });
+    const state = createCronServiceState({
+      storePath,
+      cronEnabled: true,
+      log: logger,
+      nowMs: () => NOW,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+    await ensureLoaded(state, { skipRecompute: true });
+
+    const external = await loadCronStore(storePath);
+    external.jobs[0]!.name = "external topology";
+    await saveCronStore(storePath, external);
+
+    const realSave = cronStoreModule.saveCronJobsStore;
+    let saveCall = 0;
+    vi.spyOn(cronStoreModule, "saveCronJobsStore").mockImplementation(async (...args) => {
+      saveCall += 1;
+      if (saveCall === 2) {
+        runOpenClawStateWriteTransaction(({ db }) => {
+          executeSqliteQuerySync(
+            db,
+            getCronStoreKysely(db)
+              .updateTable("cron_jobs")
+              .set({
+                running_at_ms: NOW + 1,
+                runtime_updated_at_ms: NOW + 1,
+                state_json: JSON.stringify({ runningAtMs: NOW + 1 }),
+              })
+              .where("store_key", "=", cronStoreKey(storePath))
+              .where("job_id", "=", "revision-quiet"),
+          );
+        });
+      }
+      return await realSave(...args);
+    });
+
+    await expect(persist(state)).rejects.toBeInstanceOf(CronStoreEpochMismatchError);
+    expect(state.store?.jobs[0]?.state.runningAtMs).toBe(NOW + 1);
+
+    await persist(state, { stateOnly: true });
+    expect((await loadCronStore(storePath)).jobs[0]?.state.runningAtMs).toBe(NOW + 1);
+  });
+
   it("publishes merged sibling runtime state after a stale full save", async () => {
     const { storePath } = await makeStorePath();
     await saveCronStore(storePath, { version: 1, jobs: [job("edited"), job("sibling")] });

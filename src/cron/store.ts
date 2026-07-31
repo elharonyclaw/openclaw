@@ -21,6 +21,7 @@ import {
   assertCronStoreCanPersist,
   CronRuntimeRevisionMismatchError,
   CronStoreEpochMismatchError,
+  CronStoreTopologyMismatchError,
   loadedCronStoreFromRows,
   loadCronRows,
   loadCronRowsWithEpoch,
@@ -41,7 +42,11 @@ export type {
 } from "./store/types.js";
 import type { CronJob, CronStoreFile } from "./types.js";
 
-export { CronRuntimeRevisionMismatchError, CronStoreEpochMismatchError };
+export {
+  CronRuntimeRevisionMismatchError,
+  CronStoreEpochMismatchError,
+  CronStoreTopologyMismatchError,
+};
 
 function resolveDefaultCronDir(env: NodeJS.ProcessEnv): string {
   return path.join(resolveConfigDir(env), "cron");
@@ -95,6 +100,7 @@ export async function loadCronJobsStoreWithConfigJobs(
   }
   return {
     store: { version: 1, jobs: [] },
+    topologyFingerprintByJobId: new Map(),
     storeEpoch,
     runtimeRevision,
     configJobs: [],
@@ -121,6 +127,7 @@ export function removeStaleCronJobFamilyRows(
 function emptyLoadedCronStore(storeEpoch = 0, runtimeRevision = 0): LoadedCronStore {
   return {
     store: { version: 1, jobs: [] },
+    topologyFingerprintByJobId: new Map(),
     storeEpoch,
     runtimeRevision,
     configJobs: [],
@@ -191,6 +198,8 @@ type SaveCronStoreOptions = {
   env?: NodeJS.ProcessEnv;
   /** Reject a stale full-store writer instead of replacing newer topology. */
   expectedStoreEpoch?: number;
+  /** Caller-loaded topology fingerprints that catch epoch-blind legacy writers. */
+  expectedTopologyFingerprintByJobId?: ReadonlyMap<string, string>;
   /** Detect runtime writes committed since this snapshot was loaded. */
   expectedRuntimeRevision?: number;
   /** Per-job runtime baseline for distinguishing stale siblings from intentional writes. */
@@ -206,6 +215,7 @@ type SaveCronJobsStoreResult = {
   runtimeRevision: number;
   runtimeMerged: boolean;
   store: CronStoreFile;
+  topologyFingerprintByJobId: Map<string, string>;
 };
 
 async function atomicWrite(filePath: string, content: string, dirMode = 0o700): Promise<void> {
@@ -228,6 +238,9 @@ export async function saveCronJobsStore(
 ): Promise<SaveCronJobsStoreResult | void> {
   const resolvedStorePath = path.resolve(storePath);
   const storeKey = cronStoreKey(resolvedStorePath);
+  // Epoch/revision checks catch new-code writers; legacy writers are epoch-blind,
+  // so every write path must compare against a caller-loaded baseline (topology
+  // fingerprint + per-job runtime baselines) and preserve rows it did not intend to change.
   if (opts?.stateOnly) {
     // Hot-path timer updates only mutate runtime columns; full config JSON stays
     // untouched so user-authored cron definitions do not churn.
@@ -247,15 +260,17 @@ export async function saveCronJobsStore(
           expectedRuntimeStateByJobId: opts.expectedRuntimeStateByJobId,
           expectedRuntimeUpdatedAtMsByJobId: opts.expectedRuntimeUpdatedAtMsByJobId,
         });
+        const loaded = loadedCronStoreFromRows(
+          loadCronRows(db, storeKey),
+          storeEpoch,
+          nextRuntimeRevision,
+        );
         return {
           storeEpoch,
           runtimeRevision: nextRuntimeRevision,
           runtimeMerged,
-          store: loadedCronStoreFromRows(
-            loadCronRows(db, storeKey),
-            storeEpoch,
-            nextRuntimeRevision,
-          ).store,
+          store: loaded.store,
+          topologyFingerprintByJobId: loaded.topologyFingerprintByJobId,
         };
       },
       { env: opts?.env },
@@ -273,17 +288,24 @@ export async function saveCronJobsStore(
         opts.expectedRuntimeRevision !== runtimeRevisionBeforeWrite;
       const storeEpoch = replaceCronRows(db, storeKey, store, {
         expectedStoreEpoch: opts?.expectedStoreEpoch,
+        expectedTopologyFingerprintByJobId: opts?.expectedTopologyFingerprintByJobId,
         expectedRuntimeRevision: opts?.expectedRuntimeRevision,
         expectedRuntimeStateByJobId: opts?.expectedRuntimeStateByJobId,
+        expectedRuntimeUpdatedAtMsByJobId: opts?.expectedRuntimeUpdatedAtMsByJobId,
         bumpStoreEpoch: opts?.bumpStoreEpoch ?? true,
       });
       const runtimeRevision = readCronRuntimeRevision(db, storeKey);
+      const loaded = loadedCronStoreFromRows(
+        loadCronRows(db, storeKey),
+        storeEpoch,
+        runtimeRevision,
+      );
       return {
         storeEpoch,
         runtimeRevision,
         runtimeMerged,
-        store: loadedCronStoreFromRows(loadCronRows(db, storeKey), storeEpoch, runtimeRevision)
-          .store,
+        store: loaded.store,
+        topologyFingerprintByJobId: loaded.topologyFingerprintByJobId,
       };
     },
     { env: opts?.env },

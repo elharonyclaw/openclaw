@@ -1,6 +1,7 @@
 import type fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { listAgentEntries, tryResolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeAgentId } from "../routing/session-key.js";
@@ -191,6 +192,10 @@ export async function writeConfigFileFromContext(
     ...topologyMaterialization.insertedPaths,
     ...(shouldStampOwnershipGeneration ? [["agents", "ownership"]] : []),
   ];
+  const nextSessionStoreOwner = nextConfig.agents?.defaults?.sessionStore;
+  const canSynthesizeSessionStoreOwner =
+    nextSessionStoreOwner === undefined ||
+    (isRecord(nextSessionStoreOwner) && !Object.hasOwn(nextSessionStoreOwner, "agentId"));
   if (
     !topologyMaterialization.ownerAgentId &&
     writesOwnershipTopology &&
@@ -198,7 +203,7 @@ export async function writeConfigFileFromContext(
     previousSoleAgentId &&
     !previousSoleRemains &&
     keepsSameFixedSessionStore &&
-    !nextConfig.agents?.defaults?.sessionStore?.agentId
+    canSynthesizeSessionStoreOwner
   ) {
     // A removed sole agent can still physically own unscoped fixed-store rows,
     // including across a sole-to-sole swap. Preserve that storage owner only.
@@ -208,7 +213,10 @@ export async function writeConfigFileFromContext(
         ...nextConfig.agents,
         defaults: {
           ...nextConfig.agents?.defaults,
-          sessionStore: { agentId: normalizeAgentId(previousSoleAgentId) },
+          sessionStore: {
+            ...(isRecord(nextSessionStoreOwner) ? nextSessionStoreOwner : {}),
+            agentId: normalizeAgentId(previousSoleAgentId),
+          },
         },
       },
     };

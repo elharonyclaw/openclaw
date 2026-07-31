@@ -218,18 +218,6 @@ export function restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(
   }
 }
 
-/** Restores the receipt that existed before a rejected config-write handoff. */
-export function restoreRetainedLegacyDefaultCronOwnerHandoffForStore(
-  storePath: string,
-  snapshot: RetainedLegacyCronOwnerHandoffSnapshot,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  runOpenClawStateWriteTransaction(
-    ({ db }) => restoreRetainedLegacyDefaultCronOwnerHandoffInDatabase(db, storePath, snapshot),
-    { env },
-  );
-}
-
 /** Retires a handoff only after a new-code startup has durably consumed its owner. */
 export function completeLegacyDefaultCronOwnerHandoff(
   storePath: string,

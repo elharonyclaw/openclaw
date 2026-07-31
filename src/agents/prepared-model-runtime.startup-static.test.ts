@@ -116,6 +116,10 @@ vi.mock("../plugins/synthetic-auth.runtime.js", () => ({
   resolveRuntimeSyntheticAuthProviderRefs: () => [],
 }));
 
+vi.mock("./legacy-inherited-auth-dir.js", () => ({
+  resolveLegacyInheritedAuthDir: () => "/tmp/prepared-static-agent",
+}));
+
 vi.mock("./agent-scope.js", () => ({
   listAgentIds: () => ["default"],
   resolveAgentDir: () => "/tmp/prepared-static-agent",

@@ -1960,6 +1960,25 @@ describe("official external plugin catalog", () => {
     });
   });
 
+  it("lists iMessage as an official external channel", () => {
+    const imessage = expectCatalogEntry("imessage");
+    const channel = getOfficialExternalPluginCatalogManifest(imessage)?.channel;
+
+    expect(resolveOfficialExternalPluginId(imessage)).toBe("imessage");
+    expect(channel).toMatchObject({
+      id: "imessage",
+      aliases: ["imsg"],
+      docsPath: "/channels/imessage",
+    });
+    expect(resolveOfficialExternalPluginInstall(imessage)).toEqual({
+      clawhubSpec: "clawhub:@openclaw/imessage",
+      npmSpec: "@openclaw/imessage",
+      defaultChoice: "npm",
+      minHostVersion: ">=2026.7.2",
+      allowInvalidConfigRecovery: true,
+    });
+  });
+
   it.each([
     ["teams-meetings", "@openclaw/teams-meetings", "teams_meetings", "teams"],
     ["zoom-meetings", "@openclaw/zoom-meetings", "zoom_meetings", "zoom"],

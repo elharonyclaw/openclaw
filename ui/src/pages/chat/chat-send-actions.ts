@@ -1,4 +1,5 @@
 import type { QueueMode } from "../../../../src/auto-reply/reply/queue/types.js";
+import { GatewayRequestError } from "../../api/gateway.ts";
 import { t } from "../../i18n/index.ts";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import { generateUUID } from "../../lib/uuid.ts";
@@ -36,7 +37,22 @@ import {
 } from "./steer-lifecycle.ts";
 import { isInflightSteer } from "./steered-chip.ts";
 
-export async function sendChatMessageWithGeneratedRunId(
+export type DirectChatSendAttempt =
+  | { kind: "ack"; ack: ChatSendAck }
+  | { kind: "not-sent" }
+  | { kind: "rejected" }
+  | { kind: "unknown" };
+
+function isDefiniteChatSendRejection(error: unknown): boolean {
+  return (
+    error instanceof GatewayRequestError &&
+    !error.retryable &&
+    error.code !== "UNAVAILABLE" &&
+    error.code !== "AGENT_TIMEOUT"
+  );
+}
+
+export async function attemptChatMessageWithGeneratedRunId(
   state: ChatState,
   message: string,
   attachments?: ChatAttachment[],
@@ -45,14 +61,14 @@ export async function sendChatMessageWithGeneratedRunId(
     queueMode?: QueueMode;
     runId?: string;
   } = {},
-): Promise<ChatSendAck | null> {
+): Promise<DirectChatSendAttempt> {
   if (!state.client || !state.connected) {
-    return null;
+    return { kind: "not-sent" };
   }
   const msg = message.trim();
   const hasAttachments = attachments && attachments.length > 0;
   if (!msg && !hasAttachments) {
-    return null;
+    return { kind: "not-sent" };
   }
   const canApplyError = options.canApplyError ?? (() => true);
   if (canApplyError()) {
@@ -64,13 +80,14 @@ export async function sendChatMessageWithGeneratedRunId(
   // restored outbox drains intentionally omit the precondition.
   const expectedLeafEntryId = resolveDisplayedLeafEntryId(state);
   try {
-    return await requestChatSend(state, {
+    const ack = await requestChatSend(state, {
       message: msg,
       attachments,
       runId,
       ...(expectedLeafEntryId !== undefined ? { expectedLeafEntryId } : {}),
       ...(options.queueMode ? { queueMode: options.queueMode } : {}),
     });
+    return { kind: "ack", ack };
   } catch (err) {
     if (canApplyError()) {
       setChatError(
@@ -83,8 +100,22 @@ export async function sendChatMessageWithGeneratedRunId(
         void Promise.all([loadChatHistory(state), loadChatBranches(state)]);
       }
     }
-    return null;
+    return { kind: isDefiniteChatSendRejection(err) ? "rejected" : "unknown" };
   }
+}
+
+export async function sendChatMessageWithGeneratedRunId(
+  state: ChatState,
+  message: string,
+  attachments?: ChatAttachment[],
+  options: {
+    canApplyError?: () => boolean;
+    queueMode?: QueueMode;
+    runId?: string;
+  } = {},
+): Promise<ChatSendAck | null> {
+  const attempt = await attemptChatMessageWithGeneratedRunId(state, message, attachments, options);
+  return attempt.kind === "ack" ? attempt.ack : null;
 }
 
 export const steerSendDependencies: SteerSendDependencies = {

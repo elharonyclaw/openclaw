@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { tryCronScheduleIdentity } from "../schedule-identity.js";
 import type { CronJob, CronStoreFile } from "../types.js";
@@ -22,7 +23,13 @@ export function writeCronRuntimeRowDeltas(params: {
     params.expectedRuntimeRevision !== undefined &&
     params.currentRuntimeRevision !== undefined &&
     params.expectedRuntimeRevision !== params.currentRuntimeRevision;
-  const currentStates = revisionChanged
+  const hasRuntimeBaselines =
+    params.expectedRuntimeStateByJobId !== undefined &&
+    params.expectedRuntimeUpdatedAtMsByJobId !== undefined;
+  // Pre-upgrade writers may change rows without advancing the aggregate revision.
+  // Per-job baselines still isolate this caller's deltas from those sibling writes.
+  const compareCurrentRows = revisionChanged || hasRuntimeBaselines;
+  const currentStates = compareCurrentRows
     ? new Map(
         executeSqliteQuerySync(
           params.db,
@@ -35,6 +42,7 @@ export function writeCronRuntimeRowDeltas(params: {
           {
             state: stateFromRow(row),
             updatedAtMs: row.runtime_updated_at_ms ?? row.updated_at,
+            scheduleIdentity: row.schedule_identity,
           },
         ]),
       )
@@ -42,38 +50,55 @@ export function writeCronRuntimeRowDeltas(params: {
   // Resolve against a detached store: SQLite may roll back after any row update,
   // and the caller publishes the committed snapshot only after the transaction returns.
   const mergedStore = structuredClone(params.store);
+  const runtimeJobsToWrite: CronJob[] = [];
+  const scheduleIdentitiesToRepair: Array<{ jobId: string; scheduleIdentity: string | null }> = [];
   for (const job of mergedStore.jobs) {
-    if (revisionChanged) {
-      const current = currentStates?.get(job.id);
-      const hasExpectedState = params.expectedRuntimeStateByJobId?.has(job.id) === true;
-      const hasExpectedUpdatedAtMs = params.expectedRuntimeUpdatedAtMsByJobId?.has(job.id) === true;
-      if (!current || !hasExpectedState || !hasExpectedUpdatedAtMs) {
+    if (!compareCurrentRows) {
+      runtimeJobsToWrite.push(job);
+      continue;
+    }
+    const current = currentStates?.get(job.id);
+    const hasExpectedState = params.expectedRuntimeStateByJobId?.has(job.id) === true;
+    const hasExpectedUpdatedAtMs = params.expectedRuntimeUpdatedAtMsByJobId?.has(job.id) === true;
+    if (!current || !hasExpectedState || !hasExpectedUpdatedAtMs) {
+      if (revisionChanged) {
         throw params.conflictError();
       }
-      const expected = params.expectedRuntimeStateByJobId?.get(job.id) ?? {};
-      const resolution = resolveCronRuntimeDelta({
-        current: current.state,
-        next: job.state ?? {},
-        expected,
-        currentUpdatedAtMs: current.updatedAtMs,
-        nextUpdatedAtMs: job.updatedAtMs,
-        expectedUpdatedAtMs: params.expectedRuntimeUpdatedAtMsByJobId!.get(job.id)!,
-      });
-      if (resolution === "conflict") {
-        throw params.conflictError();
+      // A state-only save cannot create or restore a row that lacks the caller's baseline.
+      continue;
+    }
+    const expected = params.expectedRuntimeStateByJobId?.get(job.id) ?? {};
+    const expectedUpdatedAtMs = params.expectedRuntimeUpdatedAtMsByJobId!.get(job.id)!;
+    const scheduleIdentity =
+      tryCronScheduleIdentity(job as unknown as Record<string, unknown>) ?? null;
+    const localRuntimeChanged =
+      !isDeepStrictEqual(job.state ?? {}, expected) || job.updatedAtMs !== expectedUpdatedAtMs;
+    if (!localRuntimeChanged) {
+      if (current.scheduleIdentity !== scheduleIdentity) {
+        scheduleIdentitiesToRepair.push({ jobId: job.id, scheduleIdentity });
       }
-      if (resolution === "preserve") {
-        job.state = structuredClone(current.state);
-        if (typeof current.updatedAtMs === "number") {
-          job.updatedAtMs = current.updatedAtMs;
-        }
-        continue;
-      }
+      continue;
+    }
+    const resolution = resolveCronRuntimeDelta({
+      current: current.state,
+      next: job.state ?? {},
+      expected,
+      currentUpdatedAtMs: current.updatedAtMs,
+      nextUpdatedAtMs: job.updatedAtMs,
+      expectedUpdatedAtMs,
+    });
+    if (resolution === "conflict") {
+      throw params.conflictError();
+    }
+    if (resolution === "write") {
+      runtimeJobsToWrite.push(job);
+    } else if (current.scheduleIdentity !== scheduleIdentity) {
+      scheduleIdentitiesToRepair.push({ jobId: job.id, scheduleIdentity });
     }
   }
   // Resolve every job before the first row write. Direct callers therefore cannot
   // persist an early delta when a later job proves the snapshot is conflicting.
-  for (const job of mergedStore.jobs) {
+  for (const job of runtimeJobsToWrite) {
     executeSqliteQuerySync(
       params.db,
       getCronStoreKysely(params.db)
@@ -87,6 +112,16 @@ export function writeCronRuntimeRowDeltas(params: {
         })
         .where("store_key", "=", params.storeKey)
         .where("job_id", "=", job.id),
+    );
+  }
+  for (const repair of scheduleIdentitiesToRepair) {
+    executeSqliteQuerySync(
+      params.db,
+      getCronStoreKysely(params.db)
+        .updateTable("cron_jobs")
+        .set({ schedule_identity: repair.scheduleIdentity })
+        .where("store_key", "=", params.storeKey)
+        .where("job_id", "=", repair.jobId),
     );
   }
   return params.incrementRevision();

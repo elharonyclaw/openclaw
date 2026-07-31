@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import {
   CronRuntimeRevisionMismatchError,
@@ -7,6 +9,8 @@ import {
   saveCronJobsStore,
   saveCronStore,
 } from "./store.js";
+import { cronStoreKey } from "./store/key.js";
+import { getCronStoreKysely } from "./store/schema.js";
 import type { CronJob, CronStoreFile } from "./types.js";
 
 const { makeStorePath } = setupCronServiceSuite({ prefix: "cron-runtime-delta" });
@@ -37,6 +41,44 @@ function runtimeBaseline(store: CronStoreFile) {
 }
 
 describe("cron state-only runtime deltas", () => {
+  it("preserves an out-of-band sibling update when the aggregate revision matches", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const baseline = runtimeBaseline(loaded.store);
+    const writer = structuredClone(loaded.store);
+    writer.jobs[1]!.state = { nextRunAtMs: 202 };
+    writer.jobs[1]!.updatedAtMs = NOW + 202;
+
+    // Simulate a revision-blind pre-upgrade writer changing only job A.
+    runOpenClawStateWriteTransaction(({ db }) => {
+      executeSqliteQuerySync(
+        db,
+        getCronStoreKysely(db)
+          .updateTable("cron_jobs")
+          .set({
+            next_run_at_ms: 101,
+            state_json: JSON.stringify({ nextRunAtMs: 101 }),
+            runtime_updated_at_ms: NOW + 101,
+          })
+          .where("store_key", "=", cronStoreKey(storePath))
+          .where("job_id", "=", "runtime-a"),
+      );
+    });
+
+    await saveCronJobsStore(storePath, writer, {
+      stateOnly: true,
+      expectedStoreEpoch: loaded.storeEpoch,
+      expectedRuntimeRevision: loaded.runtimeRevision,
+      expectedRuntimeStateByJobId: baseline.states,
+      expectedRuntimeUpdatedAtMsByJobId: baseline.updatedAtMs,
+    });
+
+    const persisted = await loadCronStore(storePath);
+    expect(persisted.jobs.map((entry) => entry.state.nextRunAtMs)).toEqual([101, 202]);
+    expect(persisted.jobs.map((entry) => entry.updatedAtMs)).toEqual([NOW + 101, NOW + 202]);
+  });
+
   it("merges different-job writes and rejects a same-job conflict", async () => {
     const { storePath } = await makeStorePath();
     await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });

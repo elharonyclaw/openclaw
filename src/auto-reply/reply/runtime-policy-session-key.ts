@@ -11,7 +11,7 @@ import {
   buildAgentPeerSessionKey,
   normalizeAgentId,
   normalizeMainKey,
-  resolveAgentIdFromSessionKey,
+  parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import type { MsgContext } from "../templating.js";
 
@@ -105,7 +105,7 @@ export function resolveRuntimePolicySessionKey(params: {
   }
 
   const agentId =
-    resolveAgentIdFromSessionKey(sessionKey) ??
+    parseAgentSessionKey(sessionKey)?.agentId ??
     normalizeOptionalString(params.ctx?.AgentId) ??
     (params.cfg ? tryResolveLegacyCompatibilityAgentId(params.cfg) : undefined);
   if (!agentId) {

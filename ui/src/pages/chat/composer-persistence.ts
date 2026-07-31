@@ -18,6 +18,13 @@ import {
   type StoredChatOutboxScope,
 } from "../../lib/chat/outbox-store.ts";
 import { normalizeSenderIdentity } from "../../lib/chat/sender-label.ts";
+import {
+  DEFAULT_MAIN_KEY,
+  buildAgentMainSessionKey,
+  resolveUiConfiguredMainKey,
+  resolveUiDefaultAgentId,
+  resolveUiKnownSelectedGlobalAgentId,
+} from "../../lib/sessions/session-key.ts";
 // Control UI chat module implements composer persistence behavior.
 import { getSafeSessionStorage } from "../../local-storage.ts";
 import { getChatAttachmentDataUrl } from "./attachment-payload-store.ts";
@@ -76,6 +83,17 @@ export type ChatComposerDraftRetry = {
   draftRevision: number;
 };
 
+export type ChatComposerMemoryFallback = {
+  message: string;
+  attachments: ChatAttachment[];
+  commandRunId?: string;
+  commandRunIdExpiresAtMs?: number;
+  commandRunScopeKey?: string;
+  storageFailed: boolean;
+  draftRetry?: ChatComposerDraftRetry;
+  sequence: number;
+};
+
 type ChatComposerPersistStatus = "persisted" | "conflict" | "storage-failed";
 
 export type ChatComposerPersistResult =
@@ -103,7 +121,7 @@ type ChatComposerCommandRecoveryState = {
 
 export type ChatComposerCommandRecoveryResult =
   | { status: "restored"; draftRevision: number }
-  | { status: "conflict" }
+  | { status: "conflict"; reason: "local" | "shared" }
   | ({ status: "storage-failed" } & ChatComposerDraftRetry);
 
 export type ChatComposerRecoveryPersistence = {
@@ -111,6 +129,7 @@ export type ChatComposerRecoveryPersistence = {
   checkpointCommandClear: (recovery: ChatComposerCommandRecovery) => boolean;
   restoreCommandDraft: (recovery: ChatComposerCommandRecovery) => ChatComposerCommandRecoveryResult;
   adoptCommandRecovery: (recovery: ChatComposerCommandRecovery) => void;
+  completeCommandClear: (recovery: ChatComposerCommandRecovery) => void;
 };
 
 type ChatComposerPersistOptions = {
@@ -130,6 +149,44 @@ export function nextChatComposerMemoryFallbackSequence(): number {
   return ++lastChatComposerMemoryFallbackSequence;
 }
 
+function withoutChatComposerCommandRun(
+  fallback: ChatComposerMemoryFallback,
+): ChatComposerMemoryFallback {
+  const {
+    commandRunId: _commandRunId,
+    commandRunIdExpiresAtMs: _commandRunIdExpiresAtMs,
+    commandRunScopeKey: _commandRunScopeKey,
+    ...rest
+  } = fallback;
+  return rest;
+}
+
+export function resolveChatComposerFallbackCommandRun(
+  fallback: ChatComposerMemoryFallback | undefined,
+  scopeKey: string,
+  nowMs = Date.now(),
+):
+  | {
+      id: string;
+      expiresAtMs: number;
+      scopeKey: string;
+    }
+  | undefined {
+  if (
+    !fallback?.commandRunId ||
+    fallback.commandRunScopeKey !== scopeKey ||
+    typeof fallback.commandRunIdExpiresAtMs !== "number" ||
+    fallback.commandRunIdExpiresAtMs <= nowMs
+  ) {
+    return undefined;
+  }
+  return {
+    id: fallback.commandRunId,
+    expiresAtMs: fallback.commandRunIdExpiresAtMs,
+    scopeKey: fallback.commandRunScopeKey,
+  };
+}
+
 export function chatComposerCommandRecoveryScope(
   recovery: ChatComposerCommandRecovery,
 ): StoredChatOutboxScope | null {
@@ -142,24 +199,103 @@ export function chatComposerCommandClearResult(
   return chatComposerCommandRecoveryStates.get(recovery)?.cleared ?? null;
 }
 
-export function chatComposerFallbackMatchesCommandClear(
-  recovery: ChatComposerCommandRecovery,
-  fallback: {
-    attachments: ChatAttachment[];
-    draftRetry?: ChatComposerDraftRetry;
-    message: string;
-    storageFailed: boolean;
+export function resolveChatComposerMemoryFallback(
+  state: ChatComposerScope & {
+    chatComposerFallbackByScope: Record<string, ChatComposerMemoryFallback>;
   },
-): boolean {
-  const cleared = chatComposerCommandRecoveryStates.get(recovery)?.cleared;
-  return (
-    cleared?.status === "storage-failed" &&
-    fallback.storageFailed &&
-    fallback.message === "" &&
-    fallback.attachments.length === 0 &&
-    fallback.draftRetry?.expectedDraftRevision === cleared.expectedDraftRevision &&
-    fallback.draftRetry.draftRevision === cleared.draftRevision
-  );
+  sessionKey: string,
+): { fallback?: ChatComposerMemoryFallback; scopeKey: string } {
+  const scope = resolveStoredChatOutboxScope(state, sessionKey);
+  const scopeKey = storedChatOutboxScopeKey(scope);
+  const fallback = state.chatComposerFallbackByScope[scopeKey];
+  const selectedGlobalAgentId = resolveUiKnownSelectedGlobalAgentId(state);
+  if (scope.sessionKey !== "global" || !scope.agentId) {
+    return { fallback, scopeKey };
+  }
+  const configuredMainKey = resolveUiConfiguredMainKey(state);
+  const isSelectedTarget = scope.agentId === selectedGlobalAgentId;
+  const isDefaultTarget = scope.agentId === resolveUiDefaultAgentId(state);
+  const qualifiedMainScopeKey =
+    configuredMainKey === DEFAULT_MAIN_KEY
+      ? undefined
+      : storedChatOutboxScopeKey({
+          sessionKey: buildAgentMainSessionKey({
+            agentId: scope.agentId,
+            mainKey: configuredMainKey,
+          }),
+          agentId: scope.agentId,
+        });
+  if (!isSelectedTarget && !isDefaultTarget && !qualifiedMainScopeKey) {
+    return { fallback, scopeKey };
+  }
+  const fallbackSourceKeys = new Set([scopeKey]);
+  if (isSelectedTarget) {
+    fallbackSourceKeys.add(storedChatOutboxScopeKey({ sessionKey: "global" }));
+  }
+  if (isDefaultTarget) {
+    fallbackSourceKeys.add(storedChatOutboxScopeKey({ sessionKey: DEFAULT_MAIN_KEY }));
+    fallbackSourceKeys.add(storedChatOutboxScopeKey({ sessionKey: configuredMainKey }));
+  }
+  if (qualifiedMainScopeKey) {
+    fallbackSourceKeys.add(qualifiedMainScopeKey);
+  }
+  const candidates = [...fallbackSourceKeys]
+    .map((candidateScopeKey) => ({
+      fallback: state.chatComposerFallbackByScope[candidateScopeKey],
+      scopeKey: candidateScopeKey,
+    }))
+    .filter(
+      (candidate): candidate is { fallback: ChatComposerMemoryFallback; scopeKey: string } =>
+        candidate.fallback !== undefined,
+    );
+  const newest = candidates.toSorted(
+    (left, right) => right.fallback.sequence - left.fallback.sequence,
+  )[0];
+  if (!newest) {
+    return { scopeKey };
+  }
+  const sourceKey = newest.scopeKey;
+  const sourceFallback = newest.fallback;
+  const sourceCommandRun = resolveChatComposerFallbackCommandRun(sourceFallback, sourceKey);
+  let adoptedFallback =
+    sourceCommandRun && sourceKey === scopeKey
+      ? sourceFallback
+      : withoutChatComposerCommandRun(sourceFallback);
+  if (candidates.length === 1 && sourceKey === scopeKey) {
+    if (adoptedFallback !== sourceFallback) {
+      state.chatComposerFallbackByScope = {
+        ...state.chatComposerFallbackByScope,
+        [scopeKey]: adoptedFallback,
+      };
+    }
+    return { fallback: adoptedFallback, scopeKey };
+  }
+  if (sourceKey !== scopeKey && sourceFallback.draftRetry) {
+    const committedRevision = loadChatComposerCommittedDraftRevision(
+      state,
+      sessionKey,
+      scope.agentId,
+    );
+    const latestRevision = loadChatComposerDraftRevision(state, sessionKey, scope.agentId);
+    // Rebase only when this unresolved edit is newer than every resolved
+    // attempt. Otherwise its original CAS must keep newer pane input intact.
+    if (sourceFallback.draftRetry.draftRevision > latestRevision) {
+      adoptedFallback = {
+        ...sourceFallback,
+        draftRetry: {
+          ...sourceFallback.draftRetry,
+          expectedDraftRevision: committedRevision,
+        },
+      };
+    }
+  }
+  const nextFallbacks = { ...state.chatComposerFallbackByScope };
+  for (const candidate of candidates) {
+    delete nextFallbacks[candidate.scopeKey];
+  }
+  nextFallbacks[scopeKey] = adoptedFallback;
+  state.chatComposerFallbackByScope = nextFallbacks;
+  return { fallback: adoptedFallback, scopeKey };
 }
 
 function serializeChatAttachment(attachment: ChatAttachment): ChatAttachment | null {
@@ -880,7 +1016,7 @@ export class ChatComposerPersistence {
     const command = chatComposerCommandRecoveryStates.get(recovery);
     const cleared = command?.cleared;
     if (!state || !command || !cleared || cleared.status === "conflict") {
-      return { status: "conflict" };
+      return { status: "conflict", reason: "local" };
     }
     const clearDraftRevision = cleared.draftRevision;
     const expectedDraftRevision =
@@ -894,14 +1030,14 @@ export class ChatComposerPersistence {
       revisions.committed !== expectedDraftRevision ||
       revisions.latestAttempt !== clearDraftRevision
     ) {
-      return { status: "conflict" };
+      return { status: "conflict", reason: "shared" };
     }
     const currentScope = resolveStoredChatOutboxScope(state, state.sessionKey);
     if (
       storedChatOutboxScopeKey(currentScope) === storedChatOutboxScopeKey(command.scope) &&
       this.latestDraftRevision !== clearDraftRevision
     ) {
-      return { status: "conflict" };
+      return { status: "conflict", reason: "local" };
     }
     const draftRevision = nextDraftRevision(clearDraftRevision);
     const status = persistChatComposerStateResult(state, command.scope.sessionKey, {
@@ -911,7 +1047,7 @@ export class ChatComposerPersistence {
       expectedDraftRevision,
     });
     if (status === "conflict") {
-      return { status };
+      return { status, reason: "shared" };
     }
     command.restored =
       status === "persisted"
@@ -945,6 +1081,26 @@ export class ChatComposerPersistence {
       return;
     }
     this.pending = snapshot;
+  }
+
+  completeCommandClear(recovery: ChatComposerCommandRecovery): void {
+    const state = this.getState();
+    const command = chatComposerCommandRecoveryStates.get(recovery);
+    if (!state || !command) {
+      return;
+    }
+    const currentScope = resolveStoredChatOutboxScope(state, state.sessionKey);
+    if (storedChatOutboxScopeKey(currentScope) !== storedChatOutboxScopeKey(command.scope)) {
+      return;
+    }
+    const revisions = this.readDraftRevisions(state);
+    this.clearTimer();
+    this.pending = null;
+    this.committedDraftRevision = revisions.committed;
+    this.latestDraftRevision = revisions.latestAttempt;
+    // The successful command owns the visible clear, but another pane may own
+    // the durable draft. Adopt the clear locally without writing over that row.
+    this.lastPersisted = this.snapshot(state, revisions.committed, revisions.committed);
   }
 
   scopeForRouteSwitch(): StoredChatOutboxScope | null {

@@ -40,17 +40,8 @@ import { isInflightSteer } from "./steered-chip.ts";
 export type DirectChatSendAttempt =
   | { kind: "ack"; ack: ChatSendAck }
   | { kind: "not-sent" }
-  | { kind: "rejected" }
-  | { kind: "unknown" };
-
-function isDefiniteChatSendRejection(error: unknown): boolean {
-  return (
-    error instanceof GatewayRequestError &&
-    !error.retryable &&
-    error.code !== "UNAVAILABLE" &&
-    error.code !== "AGENT_TIMEOUT"
-  );
-}
+  | { kind: "rejected"; retryRunId?: string }
+  | { kind: "unknown"; retryRunId: string };
 
 export async function attemptChatMessageWithGeneratedRunId(
   state: ChatState,
@@ -100,7 +91,13 @@ export async function attemptChatMessageWithGeneratedRunId(
         void Promise.all([loadChatHistory(state), loadChatBranches(state)]);
       }
     }
-    return { kind: isDefiniteChatSendRejection(err) ? "rejected" : "unknown" };
+    if (err instanceof GatewayRequestError) {
+      return {
+        kind: "rejected",
+        ...(err.retryable ? { retryRunId: runId } : {}),
+      };
+    }
+    return { kind: "unknown", retryRunId: runId };
   }
 }
 

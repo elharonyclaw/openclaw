@@ -1694,6 +1694,9 @@ describe("route composer fallback", () => {
       [unresolvedGlobalScopeKey]: {
         message: "selected-agent fallback",
         attachments: [],
+        commandRunId: "unresolved-selected-run",
+        commandRunIdExpiresAtMs: Date.now() + 60_000,
+        commandRunScopeKey: unresolvedGlobalScopeKey,
         storageFailed: false,
         sequence: 2,
       },
@@ -1715,6 +1718,9 @@ describe("route composer fallback", () => {
     resetChatStateForRouteSession(state, "agent:work:other");
     resetChatStateForRouteSession(state, "global");
     expect(state.chatMessage).toBe("selected-agent fallback");
+    expect(Object.values(state.chatComposerFallbackByScope)).not.toContainEqual(
+      expect.objectContaining({ commandRunId: "unresolved-selected-run" }),
+    );
   });
 
   it("adopts a failed custom-main fallback when defaults identify the alias", () => {

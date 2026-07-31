@@ -197,7 +197,10 @@ describe("chat composer persistence", () => {
     newerPersistence.schedule();
     expect(newerPersistence.persistForRouteSwitchResult()).toEqual({ status: "persisted" });
 
-    expect(persistence.restoreCommandDraft(recovery)).toEqual({ status: "conflict" });
+    expect(persistence.restoreCommandDraft(recovery)).toEqual({
+      status: "conflict",
+      reason: "shared",
+    });
     expect(loadChatComposerSnapshot(state, state.sessionKey)).toBeNull();
   });
 

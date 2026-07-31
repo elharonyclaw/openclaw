@@ -61,6 +61,7 @@ import { resetChatThreadSessionPresentationState } from "./components/chat-threa
 import {
   CHAT_COMPOSER_DRAFT_STORAGE_ERROR,
   loadChatComposerSnapshot,
+  resolveChatComposerFallbackCommandRun,
   resolveStoredChatOutboxScope,
   storedChatOutboxScopeKey,
 } from "./composer-persistence.ts";
@@ -422,7 +423,18 @@ export abstract class ChatPaneSession extends ChatPaneSharing {
     const previousStoredDraft = previousStoredSnapshot ? previousStoredSnapshot.draft : null;
     const storedDraftMatches = previousStoredDraft === state.chatMessage;
     const hasStagedAttachments = state.chatAttachments.length > 0;
-    const retainExistingFallback = existingFallback !== undefined && !storedDraftMatches;
+    const existingFallbackMatchesComposer =
+      existingFallback?.message === state.chatMessage &&
+      existingFallback.attachments.length === state.chatAttachments.length &&
+      existingFallback.attachments.every(
+        (attachment, index) => attachment.id === state.chatAttachments[index]?.id,
+      );
+    const retainExistingFallback =
+      existingFallback !== undefined &&
+      (!storedDraftMatches ||
+        (existingFallbackMatchesComposer &&
+          resolveChatComposerFallbackCommandRun(existingFallback, previousComposerScopeKey) !==
+            undefined));
     const previousDraftRetry =
       draftPersistResult.status === "storage-failed"
         ? {

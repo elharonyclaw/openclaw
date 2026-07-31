@@ -1333,41 +1333,68 @@ describe("handleSendChat", () => {
     });
   });
 
-  it("coalesces settings-delayed redirects and preserves a newer draft", async () => {
+  it("coalesces settings-delayed redirects and never recovers over a newer draft", async () => {
     const settingsPatch = createDeferred<boolean>();
+    const redirect = createDeferred<{
+      interruptedActiveRun: boolean;
+      messageSeq: number;
+      runId: string;
+      status: string;
+    }>();
+    const storage = createStorageMock();
+    const setItem = storage.setItem.bind(storage);
+    let failWrites = false;
+    storage.setItem = (key, value) => {
+      if (failWrites) {
+        throw new Error("quota exceeded");
+      }
+      setItem(key, value);
+    };
+    vi.stubGlobal("sessionStorage", storage);
 
     const host = makeHost({
       requestHandlers: {
-        "sessions.steer": {
-          status: "started",
-          runId: "redirect-run",
-          messageSeq: 2,
-          interruptedActiveRun: true,
-        },
+        "sessions.steer": () => redirect.promise,
       },
       chatMessage: "/redirect start over",
       pendingSettingsPatches: { "agent:main": settingsPatch.promise },
       sessionKey: "agent:main",
+      settings: { gatewayUrl: "ws://gateway.test/control" },
     });
+    const persistence = enableComposerRecovery(host);
 
-    const send = handleSendChat(host);
-    const duplicate = handleSendChat(host);
-    expect(await raceWithMacrotask(send)).toBe("pending");
-    await duplicate;
-    expect(host.request).not.toHaveBeenCalled();
-    expect(host.chatMessage).toBe("/redirect start over");
+    try {
+      const send = handleSendChat(host);
+      const duplicate = handleSendChat(host);
+      expect(await raceWithMacrotask(send)).toBe("pending");
+      await duplicate;
+      expect(host.request).not.toHaveBeenCalled();
+      expect(host.chatMessage).toBe("/redirect start over");
 
-    host.chatMessage = "new draft";
-    settingsPatch.resolve(true);
-    await send;
+      host.chatMessage = "new draft";
+      settingsPatch.resolve(true);
+      await waitForFast(() =>
+        expect(host.request).toHaveBeenCalledWith("sessions.steer", {
+          key: "agent:main",
+          message: "start over",
+        }),
+      );
+      expect(host.request).toHaveBeenCalledTimes(1);
 
-    expect(host.request).toHaveBeenCalledWith("sessions.steer", {
-      key: "agent:main",
-      message: "start over",
-    });
-    expect(host.request).toHaveBeenCalledTimes(1);
-    expect(host.chatMessage).toBe("new draft");
-    expect(host.chatRunId).toBe("redirect-run");
+      failWrites = true;
+      host.sessionKey = "agent:other";
+      host.chatMessage = "other-session draft";
+      redirect.reject(new Error("redirect failed"));
+      await send;
+
+      expect(host.chatMessage).toBe("other-session draft");
+      expect(loadChatComposerSnapshot(host, "agent:main")?.draft).toBe("new draft");
+      expect(Object.values(host.chatComposerFallbackByScope)).not.toContainEqual(
+        expect.objectContaining({ message: "/redirect start over" }),
+      );
+    } finally {
+      persistence.stop();
+    }
   });
 
   it("keeps a redirect unsent when a pending picker setting fails", async () => {
@@ -3074,26 +3101,18 @@ describe("handleSendChat", () => {
     expect(host.chatMessage).toBe("/approve approval-123 allow-once");
   });
 
-  it.each([
-    {
-      error: new GatewayRequestError({
-        code: "INVALID_REQUEST",
-        message: "approval rejected",
-        retryable: false,
-      }),
-      expectedDraft: "/approve approval-123 allow-once",
-      label: "definite Gateway rejection",
-    },
-    {
-      error: new Error("connection closed before the response"),
-      expectedDraft: "",
-      label: "ambiguous transport failure",
-    },
-  ])("handles a $label without risking duplicate command execution", async (testCase) => {
+  it("restores a command after a nonretryable Gateway rejection", async () => {
     vi.stubGlobal("sessionStorage", createStorageMock());
     const host = makeHost({
       requestHandlers: {
-        "chat.send": () => Promise.reject(testCase.error),
+        "chat.send": () =>
+          Promise.reject(
+            new GatewayRequestError({
+              code: "UNAVAILABLE",
+              message: "chat run admission failed",
+              retryable: false,
+            }),
+          ),
       },
       chatRunId: "run-main",
       chatMessage: "/approve approval-123 allow-once",
@@ -3104,7 +3123,7 @@ describe("handleSendChat", () => {
 
     try {
       await handleSendChat(host);
-      expect(host.chatMessage).toBe(testCase.expectedDraft);
+      expect(host.chatMessage).toBe("/approve approval-123 allow-once");
     } finally {
       persistence.stop();
     }
@@ -3159,40 +3178,6 @@ describe("handleSendChat", () => {
     } finally {
       persistence.stop();
     }
-  });
-
-  it("discards delayed command recovery after the Gateway connection is replaced", async () => {
-    vi.stubGlobal("sessionStorage", createStorageMock());
-    const sent = createDeferred<unknown>();
-    const host = makeHost({
-      requestHandlers: {
-        "chat.send": () => sent.promise,
-      },
-      connectionEpoch: 1,
-      chatRunId: "run-main",
-      chatMessage: "/approve approval-123 allow-once",
-      sessionKey: "agent:a",
-      settings: { gatewayUrl: "ws://gateway.test/control" },
-    });
-
-    const send = handleSendChat(host);
-    await waitForFast(() =>
-      expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(true),
-    );
-    host.client = clientWithRequest(makeRequestMock({}));
-    host.connectionEpoch = 2;
-    host.sessionKey = "agent:b";
-    host.chatMessage = "replacement connection draft";
-    host.lastError = "replacement connection error";
-    host.chatError = "replacement connection error";
-    sent.resolve({ runId: "stale-approval-run", status: "error" });
-    await send;
-
-    expect(host.chatMessage).toBe("replacement connection draft");
-    expect(host.lastError).toBe("replacement connection error");
-    expect(host.chatError).toBe("replacement connection error");
-    expect(loadChatComposerSnapshot(host, "agent:a")).toBeNull();
-    expect(host.chatComposerFallbackByScope).toEqual({});
   });
 
   it("routes /side through the same session companion path", async () => {

@@ -1,7 +1,10 @@
 export {
   beginChatCommandComposerRecovery,
   cancelPendingSendBeforeRequest,
+  chatCommandComposerRetryRunId,
+  chatCommandComposerRetryState,
   checkpointChatCommandComposerClear,
+  completeChatCommandComposerSend,
   pendingComposerRestorePlan,
   restoreChatCommandComposer,
 } from "./chat-send-composer.ts";

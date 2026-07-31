@@ -383,6 +383,8 @@ export const ko: TranslationMap = {
       "업데이트가 설치되었지만 실행 중인 버전이 변경되지 않았습니다 — 재시작이 차단되었을 수 있습니다. 예상 버전 v{expectedVersion}, 실행 중 v{actualVersion}.",
     handoffTimeout:
       "업데이트 핸드오프가 시작되었지만 재연결 후 완료가 보고되지 않았습니다. 최종 결과를 확인하려면 `openclaw update status`를 실행하세요.",
+    outcomeUnknown:
+      "업데이트 요청이 수락되었을 수 있지만, 재연결 후 Gateway가 최종 결과를 보고하지 않았습니다. 다시 시도하기 전에 `openclaw update status`를 실행하세요.",
     failureReasons: {
       dirty: "변경 사항을 커밋하거나 스태시한 후 다시 시도하세요.",
       noUpstream: "업스트림 브랜치를 설정한 후 다시 시도하세요.",
@@ -685,6 +687,8 @@ export const ko: TranslationMap = {
     loadError: "대시보드를 불러올 수 없습니다: {error}",
   },
   sessionsView: {
+    subagentPrefix: "서브에이전트:",
+    automationPrefix: "자동화:",
     deletePreservedWorktrees:
       "커밋되지 않았거나 푸시되지 않은 작업이 있는 {count}개의 세션 worktree가 유지되었습니다({branches}). Settings -> Worktrees에서 관리하세요.",
     deletePreservedWorktreeConfirm:
@@ -763,6 +767,7 @@ export const ko: TranslationMap = {
     noArchivedSessions: "보관된 세션이 없습니다.",
     noSessionsMatchFilters: "필터와 일치하는 세션이 없습니다.",
     pagination: "{total}개 행 중 {start}-{end}",
+    pageSize: "페이지당 행 수",
     rowsPerPage: "페이지당 {count}개",
     showAll: "모두 보기",
     inherit: "상속",
@@ -1117,7 +1122,12 @@ export const ko: TranslationMap = {
     defaultValue: "기본값: {value}",
     resetToDefault: "기본값으로 재설정",
     select: "선택...",
+    nullValue: "null",
     jsonValue: "JSON 값",
+    invalidJson: "이 필드를 벗어나기 전에 유효한 JSON을 입력하세요.",
+    invalidString: "이 설정의 제약 조건에 맞는 값을 입력하세요.",
+    invalidNumber: "허용된 범위와 단계 내의 값을 입력하세요.",
+    draftRejected: "이 설정을 저장할 수 없습니다. 초안은 그대로 유지됩니다.",
     unsupportedArray: "지원되지 않는 배열 스키마입니다. Raw 모드를 사용하세요.",
     itemCountOne: "{count}개 항목",
     itemCount: "{count}개 항목",
@@ -2046,25 +2056,35 @@ export const ko: TranslationMap = {
     prepare: {
       title: "로컬 모델 설정",
       intro: "이 Gateway에서 로컬 모델을 다운로드하거나 준비합니다.",
-      button: "모델 설정 / 다운로드",
+      ollamaButton: "확인 및 설정",
       ollamaLabel: "Ollama",
       ollamaHint: "Ollama 서버에서 도구를 지원하는 모델을 다운로드하세요",
       llamaCppLabel: "로컬 모델 (llama.cpp)",
-      llamaCppHint: "약 5.0GB 로컬 모델을 다운로드하며, 16GB RAM이 필요합니다",
+      providerNotReady:
+        "{provider}이(가) 사용 가능한 로컬 모델을 제공하지 않았습니다. 설정 결과를 확인한 후 다시 시도하세요.",
     },
     manual: {
       title: "API 키 또는 토큰으로 연결",
       provider: "제공업체",
       selectProvider: "제공업체 선택",
+      selectProviderHint: "이 자격 증명의 출처를 선택하세요",
       accessValue: "API 키 또는 토큰",
+      accessValueFor: "{provider} API 키 또는 토큰",
       accessValuePlaceholder: "API 키 또는 토큰 붙여넣기",
       connect: "연결",
+      connectAndVerify: "연결 및 확인",
+      verifyHint: "OpenClaw는 연결을 준비 완료로 표시하기 전에 실제 모델 응답을 확인합니다.",
       required: "제공업체를 선택하고 API 키 또는 토큰을 입력하세요.",
     },
     success: {
       title: "AI가 준비되었습니다",
+      body: "OpenClaw가 {modelRef}에서 실제 응답을 받았습니다. 지금 채팅을 시작할 수 있습니다.",
+      activeModel: "활성 모델",
+      latency: "{latencyMs} ms 내에 확인됨",
       detail: "{modelRef} · {latencyMs} ms",
       openChat: "채팅 열기",
+      continueSetup: "설정 계속하기",
+      stayHere: "설정에 머무르기",
       configuredModel: "구성된 모델",
     },
     failure: {
@@ -2249,6 +2269,11 @@ export const ko: TranslationMap = {
       channelDegraded: "{channel} 상태가 저하되었습니다 — 무슨 일이 있었는지 물어보세요",
       channelFallback: "채널",
       dismiss: "이 업데이트 무시",
+      channelSetupTitle: "이 앱 외부에서 OpenClaw에 연결하기",
+      channelSetupBody:
+        "웹 앱은 이미 작동합니다. 다른 서비스에서 OpenClaw에 메시지를 보내려는 경우에만 채널을 추가하세요.",
+      channelSetupAction: "채널 설정하기",
+      channelSetupDismiss: "웹 앱 계속 사용하기",
     },
   },
   mcpServers: {
@@ -2262,6 +2287,10 @@ export const ko: TranslationMap = {
     targetLabel: "URL 또는 명령",
     nameInvalid: "서버 이름에는 문자, 숫자, 점, 대시, 밑줄을 사용할 수 있습니다.",
     targetInvalid: "HTTP 전송의 경우 URL을, stdio의 경우 유효한 명령줄을 입력하세요.",
+    sessionEnableFailed:
+      "서버가 전역적으로 비활성화된 상태로 저장되었지만, 이 세션에 대해 활성화하는 데 실패했습니다: {error}",
+    sessionChanged: "활성화되기 전에 활성 세션이 변경되었습니다.",
+    sessionUnavailable: "활성 세션을 사용할 수 없습니다. 새로 고침한 후 다시 시도하세요.",
     nameTaken: "이름이 “{name}”인 MCP 서버가 이미 있습니다.",
     missing: "구성에서 MCP 서버 “{name}”을(를) 찾을 수 없습니다.",
     missingTransport: "전송 누락",
@@ -2429,7 +2458,9 @@ export const ko: TranslationMap = {
       description:
         "정확히 하나의 메모리 플러그인이 메모리 슬롯을 소유합니다. 엔진을 선택하면 해당 엔진이 활성화되고 나머지는 비활성화됩니다.",
       rowTitle: "메모리 엔진",
+      openClawMemory: "OpenClaw Memory",
       off: "끔",
+      unavailable: "사용 불가",
       autoHint: "config에 고정된 엔진이 없으므로 슬롯이 기본 소유자로 폴백됩니다.",
       explicitHint: "이 엔진은 config의 plugins.slots.memory 아래에 고정되어 있습니다.",
       offHint:
@@ -2731,6 +2762,11 @@ export const ko: TranslationMap = {
       title: "도구 검색",
       description:
         "제한된 도구 디렉터리를 표시하고 나머지는 검색 뒤로 미뤄, 대규모 MCP 및 플러그인 카탈로그가 프롬프트를 혼잡하게 만들지 않도록 합니다.",
+    },
+    loopDetection: {
+      title: "도구 루프 감지",
+      description:
+        "에이전트가 진전을 멈췄을 때 반복되는 도구 호출을 경고하거나 차단하는 롤링 히스토리 가드를 활성화합니다.",
     },
     localModelLean: {
       title: "로컬 모델용 경량 도구",
@@ -3755,12 +3791,12 @@ export const ko: TranslationMap = {
       loadingPage: "위키 페이지 로드 중…",
       dreamsTab: "Dreams",
       insightsTab: "가져온 인사이트",
-      palaceTab: "메모리 팰리스",
+      wikiTab: "메모리 위키",
       dreamsExplainer:
         "이것은 시스템이 메모리를 재생하고 통합하는 동안 작성하는 원본 꿈 일기입니다. 메모리 시스템이 무엇을 인식하고 있는지, 그리고 어디가 아직 노이즈가 많거나 빈약해 보이는지 살펴보는 데 사용하세요.",
       insightsExplainer:
         "이것은 외부 기록에서 클러스터링된 가져온 인사이트입니다. 어떤 것이든 지속적인 메모리로 승격되기 전에 가져오기가 무엇을 드러냈는지 검토하는 데 사용하세요.",
-      palaceExplainer:
+      wikiExplainer:
         "이것은 시스템이 검색하고 추론할 수 있는 컴파일된 메모리 위키 표면입니다. 원본으로 가져온 소스 채팅이 아니라 실제 메모리 페이지, 주장, 미해결 질문, 모순을 살펴보는 데 사용하세요.",
       copyArchivePath: "아카이브 경로 복사",
       loadingInsights: "가져온 인사이트 로드 중…",
@@ -3776,9 +3812,9 @@ export const ko: TranslationMap = {
       riskReasons: "위험 사유:",
       labels: "라벨:",
       openSourcePage: "소스 페이지 열기",
-      loadingPalace: "기억 궁전 불러오는 중…",
-      emptyPalace: "기억 궁전이 아직 채워지지 않았습니다",
-      emptyPalaceHint:
+      loadingWiki: "메모리 위키 로딩 중…",
+      emptyWiki: "메모리 위키가 아직 채워지지 않았습니다",
+      emptyWikiHint:
         "현재 위키에는 대부분 원시 소스 가져오기와 운영 보고서만 있습니다. 이 탭은 종합, 엔터티 또는 개념이 작성되기 시작하면 유용해집니다.",
       claims: "주장",
       openQuestions: "미해결 질문",
@@ -3854,7 +3890,7 @@ export const ko: TranslationMap = {
       tidyingKnowledgeGraph: "지식 그래프를 정리하는 중…",
       replayingConversations: "오늘의 대화를 다시 살펴보는 중…",
       weavingShortTerm: "단기 기억을 장기 기억으로 엮는 중…",
-      defragmentingMindPalace: "마인드 팰리스를 조각 모음하는 중…",
+      defragmentingMemoryLane: "메모리 레인 조각 모음 중…",
       filingLooseThoughts: "흩어진 생각을 정리하는 중…",
       connectingDots: "멀리 떨어진 점들을 연결하는 중…",
       compostingContext: "오래된 컨텍스트 창을 퇴비화하는 중…",
@@ -3879,6 +3915,7 @@ export const ko: TranslationMap = {
     emptySubtitle: "Sign in to a provider or add an API key, then refresh.",
     status: {
       ok: "연결됨",
+      ready: "준비됨",
       expiring: "Expiring",
       expired: "만료됨",
       missing: "Not signed in",
@@ -3931,6 +3968,16 @@ export const ko: TranslationMap = {
         unknown: "연결 실패",
         no_model: "사용 가능한 모델 없음",
       },
+    },
+    readiness: {
+      title: "AI 설정",
+      heading: "검증된 AI 모델 연결",
+      signedInNoModels:
+        "로그인되었지만 이 계정에는 사용 가능한 모델이 없습니다. 계속하려면 다른 공급자나 계정을 선택하세요.",
+      notConfigured: "공급자를 선택하고 OpenClaw가 사용할 모델을 검증하세요.",
+      noModels: "사용 가능한 모델 없음",
+      modelRequired: "모델 필요",
+      chooseProvider: "다른 제공자 선택",
     },
     logout: {
       action: "로그아웃",
@@ -4725,6 +4772,11 @@ export const ko: TranslationMap = {
         tools: "도구",
       },
     },
+    skills: {
+      menu: "Skills 참조",
+      label: "Skills",
+      loading: "Skills 로드 중…",
+    },
     splitView: {
       open: "분할 보기 열기",
       splitRight: "오른쪽으로 분할",
@@ -4874,6 +4926,7 @@ export const ko: TranslationMap = {
       pause: "일시 중지",
       seek: "미디어 탐색",
       download: "{filename} 다운로드",
+      preparing: "재생 준비 중…",
       videoUnavailable: "이 형식은 재생할 수 없습니다 — 대신 다운로드하세요.",
     },
     modelControls: {
@@ -4890,6 +4943,9 @@ export const ko: TranslationMap = {
       fastHelp: "빠른 응답은 더 일찍 완료되지만 사용 한도를 더 많이 소모할 수 있습니다.",
       speedUnsupported: "이 모델에서는 속도 제어를 지원하지 않습니다.",
       contextWindow: "컨텍스트 {count}",
+      chatOnly: "채팅 전용",
+      chatOnlyHelp:
+        "이 모델은 채팅은 가능하지만 도구를 사용할 수 없습니다. 파일, 명령, 웹 또는 미디어 작업에는 다른 모델을 선택하세요.",
       providerModels: "{provider} 모델",
       resetReasoning: "기본값으로 재설정 ({level})",
       useDefaultReasoning: "기본 추론 사용 ({level})",
@@ -5044,7 +5100,22 @@ export const ko: TranslationMap = {
         manageSkills: "Skills 관리",
         browseConnectors: "커넥터 찾아보기",
         addMcpServer: "MCP 서버 추가…",
-        toolAccess: "도구 액세스",
+        addMcpServerTitle: "MCP 서버 추가",
+        addMcpServerDescription: "서버를 구성하고 활성화할 위치를 선택합니다.",
+        scopeLabel: "사용 범위",
+        scopeSession: "이 세션",
+        scopeEverywhere: "모든 곳",
+        scopeSessionHint:
+          "서버는 전역적으로 비활성화된 상태로 저장되며 이 세션에서만 활성화됩니다.",
+        scopeEverywhereHint: "서버가 저장되고 모든 세션에 대해 활성화됩니다.",
+        toolAccess: {
+          label: "도구 액세스",
+          loading: "도구 로드 중…",
+          loadFailed: "도구를 로드할 수 없습니다.",
+          noTools: "이 커넥터에 사용할 수 있는 도구가 없습니다.",
+          summary: "도구 {total}개 중 {enabled}개 켜짐",
+          summaryOne: "도구 {total}개 중 {enabled}개 켜짐",
+        },
         enabledCount: "{count}개 켜짐",
         loadingSkills: "Skills 로드 중…",
         skillsLoadFailed: "Skills를 로드할 수 없습니다.",

@@ -380,6 +380,8 @@ export const hi: TranslationMap = {
       "अपडेट इंस्टॉल हुआ लेकिन चल रहा संस्करण नहीं बदला — रीस्टार्ट अवरुद्ध हो सकता है। अपेक्षित v{expectedVersion}, चल रहा v{actualVersion}।",
     handoffTimeout:
       "अपडेट हैंडऑफ़ शुरू हुआ, लेकिन पुनः कनेक्ट होने के बाद पूर्णता की रिपोर्ट नहीं मिली। अंतिम परिणाम के लिए `openclaw update status` चलाएँ।",
+    outcomeUnknown:
+      "अपडेट अनुरोध स्वीकार कर लिया गया होगा, लेकिन पुनः कनेक्ट होने के बाद Gateway ने कोई अंतिम परिणाम रिपोर्ट नहीं किया। पुनः प्रयास करने से पहले `openclaw update status` चलाएँ।",
     failureReasons: {
       dirty: "बदलावों को कमिट या स्टैश करें, फिर पुनः प्रयास करें।",
       noUpstream: "एक upstream ब्रांच सेट करें, फिर पुनः प्रयास करें।",
@@ -680,6 +682,8 @@ export const hi: TranslationMap = {
     loadError: "dashboards लोड नहीं हो सके: {error}",
   },
   sessionsView: {
+    subagentPrefix: "Subagent:",
+    automationPrefix: "Automation:",
     deletePreservedWorktrees:
       "बिना commit या push किए काम वाले {count} session worktree(s) रखे गए ({branches}). उन्हें Settings -> Worktrees में प्रबंधित करें।",
     deletePreservedWorktreeConfirm:
@@ -758,6 +762,7 @@ export const hi: TranslationMap = {
     noArchivedSessions: "कोई संग्रहित सत्र नहीं।",
     noSessionsMatchFilters: "आपके फ़िल्टर से कोई सत्र मेल नहीं खाता।",
     pagination: "{total} में से {start}-{end} पंक्तियाँ",
+    pageSize: "प्रति पृष्ठ पंक्तियाँ",
     rowsPerPage: "{count} प्रति पृष्ठ",
     showAll: "सभी दिखाएँ",
     inherit: "इनहेरिट करें",
@@ -1111,7 +1116,12 @@ export const hi: TranslationMap = {
     defaultValue: "डिफ़ॉल्ट: {value}",
     resetToDefault: "डिफ़ॉल्ट पर रीसेट करें",
     select: "चुनें...",
+    nullValue: "null",
     jsonValue: "JSON मान",
+    invalidJson: "इस फ़ील्ड को छोड़ने से पहले मान्य JSON दर्ज करें।",
+    invalidString: "इस सेटिंग की बाधाओं से मेल खाने वाला मान दर्ज करें।",
+    invalidNumber: "अनुमत सीमा और चरण के भीतर एक मान दर्ज करें।",
+    draftRejected: "यह सेटिंग सहेजी नहीं जा सकी। आपका ड्राफ़्ट अब भी यहाँ है।",
     unsupportedArray: "असमर्थित array स्कीमा। Raw मोड का उपयोग करें।",
     itemCountOne: "{count} आइटम",
     itemCount: "{count} आइटम",
@@ -2036,25 +2046,35 @@ export const hi: TranslationMap = {
     prepare: {
       title: "एक स्थानीय मॉडल सेट अप करें",
       intro: "इस Gateway पर एक स्थानीय मॉडल डाउनलोड या तैयार करें।",
-      button: "मॉडल सेट अप / डाउनलोड करें",
+      ollamaButton: "जाँचें और सेट अप करें",
       ollamaLabel: "Ollama",
       ollamaHint: "अपने Ollama सर्वर से एक tools-सक्षम मॉडल डाउनलोड करें",
       llamaCppLabel: "लोकल मॉडल (llama.cpp)",
-      llamaCppHint: "लगभग 5.0 GB का लोकल मॉडल डाउनलोड करें; 16 GB RAM आवश्यक है",
+      providerNotReady:
+        "{provider} ने कोई उपयोग योग्य स्थानीय मॉडल नहीं दिखाया। सेटअप परिणाम की समीक्षा करें, फिर पुनः प्रयास करें।",
     },
     manual: {
       title: "API key या token से कनेक्ट करें",
       provider: "प्रदाता",
       selectProvider: "प्रदाता चुनें",
+      selectProviderHint: "चुनें कि यह क्रेडेंशियल कहाँ से आता है",
       accessValue: "API key या token",
+      accessValueFor: "{provider} API कुंजी या टोकन",
       accessValuePlaceholder: "API key या token पेस्ट करें",
       connect: "कनेक्ट करें",
+      connectAndVerify: "कनेक्ट करें और सत्यापित करें",
+      verifyHint: "कनेक्शन को तैयार चिह्नित करने से पहले OpenClaw एक वास्तविक मॉडल उत्तर को सत्यापित करता है।",
       required: "प्रदाता चुनें और API key या token दर्ज करें।",
     },
     success: {
       title: "आपका AI तैयार है",
+      body: "OpenClaw को {modelRef} से एक वास्तविक उत्तर मिला। अब आप चैट करना शुरू कर सकते हैं।",
+      activeModel: "सक्रिय मॉडल",
+      latency: "{latencyMs} ms में सत्यापित",
       detail: "{modelRef} · {latencyMs} ms",
       openChat: "चैट खोलें",
+      continueSetup: "सेटअप जारी रखें",
+      stayHere: "सेटिंग्स में रहें",
       configuredModel: "कॉन्फ़िगर किया गया मॉडल",
     },
     failure: {
@@ -2239,6 +2259,11 @@ export const hi: TranslationMap = {
       channelDegraded: "{channel} घट गया है — मुझसे पूछें कि क्या हुआ",
       channelFallback: "एक चैनल",
       dismiss: "इस अपडेट को खारिज करें",
+      channelSetupTitle: "इस ऐप के बाहर OpenClaw तक पहुँचें",
+      channelSetupBody:
+        "वेब ऐप पहले से काम करता है। कोई चैनल केवल तभी जोड़ें जब आप किसी अन्य सेवा से OpenClaw को संदेश भेजना चाहते हों।",
+      channelSetupAction: "एक चैनल सेट करें",
+      channelSetupDismiss: "वेब ऐप का उपयोग जारी रखें",
     },
   },
   mcpServers: {
@@ -2252,6 +2277,10 @@ export const hi: TranslationMap = {
     targetLabel: "URL या कमांड",
     nameInvalid: "सर्वर के नाम में अक्षर, संख्याएँ, डॉट, डैश या अंडरस्कोर का उपयोग होता है।",
     targetInvalid: "HTTP ट्रांसपोर्ट के लिए एक URL या stdio के लिए एक मान्य कमांड लाइन दर्ज करें।",
+    sessionEnableFailed:
+      "सर्वर को वैश्विक रूप से अक्षम सहेजा गया था, लेकिन इसे इस सत्र के लिए सक्षम करना विफल रहा: {error}",
+    sessionChanged: "इसे सक्षम किए जाने से पहले सक्रिय सत्र बदल गया।",
+    sessionUnavailable: "सक्रिय सत्र अनुपलब्ध है; रीफ्रेश करें और पुनः प्रयास करें।",
     nameTaken: "“{name}” नाम का एक MCP सर्वर पहले से मौजूद है।",
     missing: "कॉन्फ़िगरेशन में MCP सर्वर “{name}” नहीं मिला।",
     missingTransport: "ट्रांसपोर्ट अनुपस्थित",
@@ -2419,7 +2448,9 @@ export const hi: TranslationMap = {
       description:
         "ठीक एक memory plugin memory slot का स्वामी होता है। किसी engine को चुनने से वह सक्षम हो जाता है और बाकी अक्षम हो जाते हैं।",
       rowTitle: "Memory engine",
+      openClawMemory: "OpenClaw Memory",
       off: "बंद",
+      unavailable: "अनुपलब्ध",
       autoHint: "config में कोई engine पिन नहीं है, इसलिए slot अपने डिफ़ॉल्ट स्वामी पर वापस चला जाता है।",
       explicitHint: "यह engine config में plugins.slots.memory के तहत पिन किया गया है।",
       offHint: "config में memory बंद है: plugins.slots.memory none पर सेट है।",
@@ -2711,6 +2742,11 @@ export const hi: TranslationMap = {
       title: "टूल खोज",
       description:
         "एक सीमित टूल निर्देशिका दृश्यमान रखें और बाकी को खोज के पीछे स्थगित करें, ताकि बड़े MCP और प्लगइन कैटलॉग प्रॉम्प्ट में भीड़ न लगाएँ।",
+    },
+    loopDetection: {
+      title: "टूल-लूप डिटेक्शन",
+      description:
+        "रोलिंग-हिस्ट्री गार्ड सक्षम करें जो किसी एजेंट के प्रगति करना बंद करने पर दोहराए गए टूल कॉल को चेतावनी देते या रोकते हैं।",
     },
     localModelLean: {
       title: "स्थानीय मॉडलों के लिए लीन टूल",
@@ -3733,12 +3769,12 @@ export const hi: TranslationMap = {
       loadingPage: "Wiki पेज लोड हो रहा है…",
       dreamsTab: "Dreams",
       insightsTab: "इम्पोर्टेड इनसाइट्स",
-      palaceTab: "मेमोरी पैलेस",
+      wikiTab: "Memory Wiki",
       dreamsExplainer:
         "यह कच्ची ड्रीम डायरी है जिसे सिस्टम मेमोरी को रीप्ले और समेकित करते समय लिखता है; इसका उपयोग यह जांचने के लिए करें कि मेमोरी सिस्टम क्या नोटिस कर रहा है, और यह कहाँ अभी भी शोरगुल भरा या पतला दिखता है।",
       insightsExplainer:
         "ये बाहरी इतिहास से क्लस्टर की गई इम्पोर्टेड इनसाइट्स हैं; इनका उपयोग यह समीक्षा करने के लिए करें कि टिकाऊ मेमोरी में शामिल होने से पहले इम्पोर्ट्स ने क्या सामने लाया।",
-      palaceExplainer:
+      wikiExplainer:
         "यह संकलित मेमोरी wiki सतह है जिसे सिस्टम खोज सकता है और उस पर तर्क कर सकता है; इसका उपयोग कच्चे इम्पोर्टेड स्रोत चैट्स के बजाय वास्तविक मेमोरी पेजों, दावों, खुले सवालों और विरोधाभासों की जांच के लिए करें।",
       copyArchivePath: "आर्काइव पाथ कॉपी करें",
       loadingInsights: "इम्पोर्टेड इनसाइट्स लोड हो रही हैं…",
@@ -3754,9 +3790,9 @@ export const hi: TranslationMap = {
       riskReasons: "जोखिम कारण:",
       labels: "लेबल:",
       openSourcePage: "स्रोत पृष्ठ खोलें",
-      loadingPalace: "मेमोरी पैलेस लोड हो रहा है…",
-      emptyPalace: "मेमोरी पैलेस अभी भरा नहीं गया है",
-      emptyPalaceHint:
+      loadingWiki: "मेमोरी विकी लोड हो रहा है…",
+      emptyWiki: "मेमोरी विकी अभी तक पॉपुलेट नहीं हुआ है",
+      emptyWikiHint:
         "अभी विकी में ज़्यादातर कच्चे स्रोत आयात और परिचालन रिपोर्ट हैं। यह टैब तब उपयोगी बनता है जब संश्लेषण, एंटिटीज़, या अवधारणाएँ लिखी जाने लगती हैं।",
       claims: "दावे",
       openQuestions: "खुले प्रश्न",
@@ -3833,7 +3869,7 @@ export const hi: TranslationMap = {
       tidyingKnowledgeGraph: "नॉलेज ग्राफ़ को व्यवस्थित किया जा रहा है…",
       replayingConversations: "आज की बातचीतों को फिर से चलाया जा रहा है…",
       weavingShortTerm: "अल्पकालिक को दीर्घकालिक में बुना जा रहा है…",
-      defragmentingMindPalace: "माइंड पैलेस को डीफ़्रैगमेंट किया जा रहा है…",
+      defragmentingMemoryLane: "मेमोरी लेन को डीफ्रैग्मेंट किया जा रहा है…",
       filingLooseThoughts: "बिखरे विचारों को फ़ाइल किया जा रहा है…",
       connectingDots: "दूरस्थ बिंदुओं को जोड़ा जा रहा है…",
       compostingContext: "पुरानी कॉन्टेक्स्ट विंडो को कम्पोस्ट किया जा रहा है…",
@@ -3858,6 +3894,7 @@ export const hi: TranslationMap = {
     emptySubtitle: "Sign in to a provider or add an API key, then refresh.",
     status: {
       ok: "कनेक्टेड",
+      ready: "तैयार",
       expiring: "Expiring",
       expired: "समाप्त",
       missing: "Not signed in",
@@ -3910,6 +3947,16 @@ export const hi: TranslationMap = {
         unknown: "कनेक्शन विफल रहा",
         no_model: "कोई मॉडल उपलब्ध नहीं है",
       },
+    },
+    readiness: {
+      title: "AI सेटअप",
+      heading: "एक सत्यापित AI मॉडल कनेक्ट करें",
+      signedInNoModels:
+        "आप साइन इन हैं, लेकिन यह खाता कोई उपयोग योग्य मॉडल उपलब्ध नहीं कराता। जारी रखने के लिए दूसरा प्रदाता या खाता चुनें।",
+      notConfigured: "एक प्रदाता चुनें और उस मॉडल को सत्यापित करें जिसका उपयोग OpenClaw करेगा।",
+      noModels: "कोई मॉडल उपलब्ध नहीं",
+      modelRequired: "मॉडल आवश्यक है",
+      chooseProvider: "दूसरा प्रदाता चुनें",
     },
     logout: {
       action: "लॉग आउट करें",
@@ -4695,6 +4742,11 @@ export const hi: TranslationMap = {
         tools: "टूल्स",
       },
     },
+    skills: {
+      menu: "Skill संदर्भ",
+      label: "कौशल",
+      loading: "Skills लोड हो रहे हैं…",
+    },
     splitView: {
       open: "स्प्लिट व्यू खोलें",
       splitRight: "दाईं ओर विभाजित करें",
@@ -4844,6 +4896,7 @@ export const hi: TranslationMap = {
       pause: "रोकें",
       seek: "मीडिया खोजें",
       download: "{filename} डाउनलोड करें",
+      preparing: "प्लेबैक तैयार किया जा रहा है…",
       videoUnavailable: "यह फ़ॉर्मेट नहीं चला सकते — इसके बजाय डाउनलोड करें।",
     },
     modelControls: {
@@ -4860,6 +4913,9 @@ export const hi: TranslationMap = {
       fastHelp: "तेज़ प्रतिक्रियाएँ जल्दी पूरी होती हैं और आपकी उपयोग सीमा का अधिक उपयोग कर सकती हैं।",
       speedUnsupported: "इस मॉडल के लिए गति नियंत्रण समर्थित नहीं है।",
       contextWindow: "{count} संदर्भ",
+      chatOnly: "केवल चैट",
+      chatOnlyHelp:
+        "यह मॉडल चैट कर सकता है, लेकिन यह टूल का उपयोग नहीं कर सकता। फ़ाइलों, कमांड, वेब, या मीडिया कार्यों के लिए दूसरा मॉडल चुनें।",
       providerModels: "{provider} मॉडल",
       resetReasoning: "डिफ़ॉल्ट पर रीसेट करें ({level})",
       useDefaultReasoning: "डिफ़ॉल्ट रीज़निंग का उपयोग करें ({level})",
@@ -5014,7 +5070,21 @@ export const hi: TranslationMap = {
         manageSkills: "Skills प्रबंधित करें",
         browseConnectors: "कनेक्टर ब्राउज़ करें",
         addMcpServer: "MCP सर्वर जोड़ें…",
-        toolAccess: "टूल एक्सेस",
+        addMcpServerTitle: "MCP सर्वर जोड़ें",
+        addMcpServerDescription: "सर्वर कॉन्फ़िगर करें और चुनें कि यह कहाँ सक्षम है।",
+        scopeLabel: "उपलब्धता",
+        scopeSession: "यह सत्र",
+        scopeEverywhere: "हर जगह",
+        scopeSessionHint: "सर्वर वैश्विक रूप से अक्षम सहेजा जाता है और केवल इस सत्र के लिए सक्षम किया जाता है।",
+        scopeEverywhereHint: "सर्वर हर सत्र के लिए सहेजा और सक्षम किया जाता है।",
+        toolAccess: {
+          label: "टूल एक्सेस",
+          loading: "टूल लोड हो रहे हैं…",
+          loadFailed: "टूल लोड नहीं हो सके।",
+          noTools: "इस कनेक्टर के लिए कोई टूल उपलब्ध नहीं है।",
+          summary: "{total} में से {enabled} टूल चालू",
+          summaryOne: "{total} में से {enabled} टूल चालू",
+        },
         enabledCount: "{count} चालू",
         loadingSkills: "Skills लोड हो रहे हैं…",
         skillsLoadFailed: "Skills लोड नहीं हो सके।",

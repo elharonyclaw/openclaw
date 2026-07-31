@@ -389,6 +389,8 @@ export const pl: TranslationMap = {
       "Aktualizacja zainstalowana, ale uruchomiona wersja nie zmieniła się — ponowne uruchomienie mogło zostać zablokowane. Oczekiwano v{expectedVersion}, uruchomiono v{actualVersion}.",
     handoffTimeout:
       "Przekazanie aktualizacji rozpoczęte, ale nie zgłoszono ukończenia po ponownym połączeniu. Uruchom `openclaw update status`, aby poznać końcowy wynik.",
+    outcomeUnknown:
+      "Żądanie aktualizacji mogło zostać zaakceptowane, ale Gateway nie zgłosił ostatecznego wyniku po ponownym połączeniu. Uruchom `openclaw update status` przed ponowną próbą.",
     failureReasons: {
       dirty: "Zatwierdź lub odłóż zmiany, a następnie spróbuj ponownie.",
       noUpstream: "Ustaw gałąź nadrzędną, a następnie spróbuj ponownie.",
@@ -699,6 +701,8 @@ export const pl: TranslationMap = {
     loadError: "Nie udało się załadować paneli: {error}",
   },
   sessionsView: {
+    subagentPrefix: "Subagent:",
+    automationPrefix: "Automatyzacja:",
     deletePreservedWorktrees:
       "Zachowano worktree sesji z niezatwierdzonymi lub niewysłanymi zmianami: {count} ({branches}). Zarządzaj nimi w Ustawienia -> Worktrees.",
     deletePreservedWorktreeConfirm:
@@ -777,6 +781,7 @@ export const pl: TranslationMap = {
     noArchivedSessions: "Brak zarchiwizowanych sesji.",
     noSessionsMatchFilters: "Żadne sesje nie pasują do Twoich filtrów.",
     pagination: "{start}-{end} z {total} wierszy",
+    pageSize: "Wierszy na stronę",
     rowsPerPage: "{count} na stronę",
     showAll: "Pokaż wszystkie",
     inherit: "dziedzicz",
@@ -1137,7 +1142,12 @@ export const pl: TranslationMap = {
     defaultValue: "Domyślnie: {value}",
     resetToDefault: "Przywróć domyślne",
     select: "Wybierz...",
+    nullValue: "null",
     jsonValue: "Wartość JSON",
+    invalidJson: "Wprowadź prawidłowy JSON przed opuszczeniem tego pola.",
+    invalidString: "Wprowadź wartość zgodną z ograniczeniami tego ustawienia.",
+    invalidNumber: "Wprowadź wartość w dozwolonym zakresie i kroku.",
+    draftRejected: "Nie udało się zapisać tego ustawienia. Twój szkic wciąż tu jest.",
     unsupportedArray: "Nieobsługiwany schemat tablicy. Użyj trybu Raw.",
     itemCountOne: "{count} element",
     itemCount: "{count} elementów",
@@ -2075,25 +2085,36 @@ export const pl: TranslationMap = {
     prepare: {
       title: "Skonfiguruj model lokalny",
       intro: "Pobierz lub przygotuj model lokalny na tym Gateway.",
-      button: "Skonfiguruj / Pobierz model",
+      ollamaButton: "Sprawdź i skonfiguruj",
       ollamaLabel: "Ollama",
       ollamaHint: "Pobierz model obsługujący narzędzia z serwera Ollama",
       llamaCppLabel: "Model lokalny (llama.cpp)",
-      llamaCppHint: "Pobierz model lokalny o rozmiarze około 5,0 GB; wymaga 16 GB RAM",
+      providerNotReady:
+        "{provider} nie udostępnił użytecznego modelu lokalnego. Sprawdź wynik konfiguracji i spróbuj ponownie.",
     },
     manual: {
       title: "Połącz za pomocą klucza API lub tokenu",
       provider: "Dostawca",
       selectProvider: "Wybierz dostawcę",
+      selectProviderHint: "Wybierz źródło tego poświadczenia",
       accessValue: "Klucz API lub token",
+      accessValueFor: "Klucz API lub token {provider}",
       accessValuePlaceholder: "Wklej klucz API lub token",
       connect: "Połącz",
+      connectAndVerify: "Połącz i zweryfikuj",
+      verifyHint:
+        "OpenClaw weryfikuje prawdziwą odpowiedź modelu przed oznaczeniem połączenia jako gotowego.",
       required: "Wybierz dostawcę i wprowadź klucz API lub token.",
     },
     success: {
       title: "Twoja sztuczna inteligencja jest gotowa",
+      body: "OpenClaw otrzymał prawdziwą odpowiedź od {modelRef}. Możesz teraz rozpocząć rozmowę.",
+      activeModel: "Aktywny model",
+      latency: "Zweryfikowano w {latencyMs} ms",
       detail: "{modelRef} · {latencyMs} ms",
       openChat: "Otwórz czat",
+      continueSetup: "Kontynuuj konfigurację",
+      stayHere: "Pozostań w ustawieniach",
       configuredModel: "Skonfigurowany model",
     },
     failure: {
@@ -2286,6 +2307,11 @@ export const pl: TranslationMap = {
       channelDegraded: "{channel} działa gorzej — zapytaj mnie, co się stało",
       channelFallback: "Kanał",
       dismiss: "Odrzuć tę aktualizację",
+      channelSetupTitle: "Skontaktuj się z OpenClaw poza tą aplikacją",
+      channelSetupBody:
+        "Aplikacja internetowa już działa. Dodaj kanał tylko wtedy, gdy chcesz pisać do OpenClaw z innej usługi.",
+      channelSetupAction: "Skonfiguruj kanał",
+      channelSetupDismiss: "Korzystaj nadal z aplikacji internetowej",
     },
   },
   mcpServers: {
@@ -2300,6 +2326,10 @@ export const pl: TranslationMap = {
     nameInvalid: "Nazwy serwerów mogą zawierać litery, cyfry, kropki, myślniki lub podkreślenia.",
     targetInvalid:
       "Wprowadź adres URL dla transportów HTTP lub prawidłowy wiersz poleceń dla stdio.",
+    sessionEnableFailed:
+      "Serwer został zapisany jako globalnie wyłączony, ale włączenie go dla tej sesji nie powiodło się: {error}",
+    sessionChanged: "Aktywna sesja zmieniła się, zanim można ją było włączyć.",
+    sessionUnavailable: "Aktywna sesja jest niedostępna; odśwież i spróbuj ponownie.",
     nameTaken: "Serwer MCP o nazwie „{name}” już istnieje.",
     missing: "Nie znaleziono serwera MCP „{name}” w konfiguracji.",
     missingTransport: "brak transportu",
@@ -2470,7 +2500,9 @@ export const pl: TranslationMap = {
       description:
         "Dokładnie jedna wtyczka pamięci zajmuje slot pamięci. Wybór silnika włącza go i wyłącza pozostałe.",
       rowTitle: "Silnik pamięci",
+      openClawMemory: "OpenClaw Memory",
       off: "Wyłączone",
+      unavailable: "Niedostępne",
       autoHint:
         "Żaden silnik nie jest przypięty w konfiguracji, więc slot wraca do domyślnego właściciela.",
       explicitHint: "Ten silnik jest przypięty w konfiguracji w plugins.slots.memory.",
@@ -2786,6 +2818,11 @@ export const pl: TranslationMap = {
       title: "Wyszukiwanie narzędzi",
       description:
         "Utrzymuj widoczny ograniczony katalog narzędzi, a resztę odkładaj za wyszukiwarką, aby duże katalogi MCP i wtyczek przestały zaśmiecać prompt.",
+    },
+    loopDetection: {
+      title: "Wykrywanie pętli narzędzi",
+      description:
+        "Włącz zabezpieczenia oparte na historii, które ostrzegają lub blokują powtarzające się wywołania narzędzi, gdy agent przestaje robić postępy.",
     },
     localModelLean: {
       title: "Odchudzone narzędzia dla modeli lokalnych",
@@ -3819,12 +3856,12 @@ export const pl: TranslationMap = {
       loadingPage: "Ładowanie strony wiki…",
       dreamsTab: "Sny",
       insightsTab: "Zaimportowane spostrzeżenia",
-      palaceTab: "Pałac pamięci",
+      wikiTab: "Wiki pamięci",
       dreamsExplainer:
         "To surowy dziennik snów, który system zapisuje podczas odtwarzania i konsolidacji pamięci; użyj go, aby sprawdzić, co system pamięci zauważa i gdzie nadal wygląda to szumowo lub ubogo.",
       insightsExplainer:
         "To zaimportowane spostrzeżenia zgrupowane z zewnętrznej historii; użyj ich, aby przejrzeć, co ujawniły importy, zanim cokolwiek trafi do trwałej pamięci.",
-      palaceExplainer:
+      wikiExplainer:
         "To skompilowana powierzchnia wiki pamięci, którą system może przeszukiwać i na której może wnioskować; użyj jej, aby sprawdzić rzeczywiste strony pamięci, twierdzenia, otwarte pytania i sprzeczności, zamiast surowych zaimportowanych czatów źródłowych.",
       copyArchivePath: "Kopiuj ścieżkę archiwum",
       loadingInsights: "Ładowanie zaimportowanych spostrzeżeń…",
@@ -3840,9 +3877,9 @@ export const pl: TranslationMap = {
       riskReasons: "Powody ryzyka:",
       labels: "Etykiety:",
       openSourcePage: "Otwórz stronę źródłową",
-      loadingPalace: "Ładowanie pałacu pamięci…",
-      emptyPalace: "Pałac pamięci nie jest jeszcze wypełniony",
-      emptyPalaceHint:
+      loadingWiki: "Ładowanie wiki pamięci…",
+      emptyWiki: "Wiki pamięci nie jest jeszcze wypełnione",
+      emptyWikiHint:
         "Obecnie wiki zawiera głównie surowe importy źródłowe i raporty operacyjne. Ta karta staje się przydatna, gdy zaczną powstawać syntezy, encje lub koncepcje.",
       claims: "Twierdzenia",
       openQuestions: "Otwarte pytania",
@@ -3920,7 +3957,7 @@ export const pl: TranslationMap = {
       tidyingKnowledgeGraph: "porządkowanie grafu wiedzy…",
       replayingConversations: "odtwarzanie dzisiejszych rozmów…",
       weavingShortTerm: "przekształcanie pamięci krótkoterminowej w długoterminową…",
-      defragmentingMindPalace: "defragmentowanie pałacu pamięci…",
+      defragmentingMemoryLane: "defragmentacja ścieżki pamięci…",
       filingLooseThoughts: "porządkowanie luźnych myśli…",
       connectingDots: "łączenie odległych punktów…",
       compostingContext: "kompostowanie starych okien kontekstu…",
@@ -3945,6 +3982,7 @@ export const pl: TranslationMap = {
     emptySubtitle: "Sign in to a provider or add an API key, then refresh.",
     status: {
       ok: "Połączono",
+      ready: "Gotowe",
       expiring: "Expiring",
       expired: "Wygasł",
       missing: "Not signed in",
@@ -3997,6 +4035,16 @@ export const pl: TranslationMap = {
         unknown: "Połączenie nie powiodło się",
         no_model: "Brak dostępnego modelu",
       },
+    },
+    readiness: {
+      title: "Konfiguracja AI",
+      heading: "Połącz zweryfikowany model AI",
+      signedInNoModels:
+        "Jesteś zalogowany, ale to konto nie udostępnia żadnych użytecznych modeli. Wybierz innego dostawcę lub konto, aby kontynuować.",
+      notConfigured: "Wybierz dostawcę i zweryfikuj model, którego użyje OpenClaw.",
+      noModels: "Brak dostępnych modeli",
+      modelRequired: "Wymagany model",
+      chooseProvider: "Wybierz innego dostawcę",
     },
     logout: {
       action: "Wyloguj się",
@@ -4804,6 +4852,11 @@ export const pl: TranslationMap = {
         tools: "Narzędzia",
       },
     },
+    skills: {
+      menu: "Odniesienia do Skills",
+      label: "Skills",
+      loading: "Ładowanie umiejętności…",
+    },
     splitView: {
       open: "Otwórz widok podzielony",
       splitRight: "Podziel w prawo",
@@ -4953,6 +5006,7 @@ export const pl: TranslationMap = {
       pause: "Wstrzymaj",
       seek: "Przewiń multimedia",
       download: "Pobierz {filename}",
+      preparing: "Przygotowywanie odtwarzania…",
       videoUnavailable: "Nie można odtworzyć tego formatu — pobierz plik.",
     },
     modelControls: {
@@ -4969,6 +5023,9 @@ export const pl: TranslationMap = {
       fastHelp: "Szybkie odpowiedzi kończą się wcześniej i mogą zużywać więcej limitów.",
       speedUnsupported: "Kontrola szybkości nie jest obsługiwana dla tego modelu.",
       contextWindow: "Kontekst: {count}",
+      chatOnly: "Tylko czat",
+      chatOnlyHelp:
+        "Ten model może prowadzić czat, ale nie może korzystać z narzędzi. Wybierz inny model do zadań związanych z plikami, poleceniami, siecią lub multimediami.",
       providerModels: "Modele {provider}",
       resetReasoning: "Przywróć domyślne ({level})",
       useDefaultReasoning: "Użyj domyślnego rozumowania ({level})",
@@ -5125,7 +5182,22 @@ export const pl: TranslationMap = {
         manageSkills: "Zarządzaj umiejętnościami",
         browseConnectors: "Przeglądaj konektory",
         addMcpServer: "Dodaj serwer MCP…",
-        toolAccess: "Dostęp do narzędzi",
+        addMcpServerTitle: "Dodaj serwer MCP",
+        addMcpServerDescription: "Skonfiguruj serwer i wybierz, gdzie ma być włączony.",
+        scopeLabel: "Dostępność",
+        scopeSession: "Ta sesja",
+        scopeEverywhere: "Wszędzie",
+        scopeSessionHint:
+          "Serwer jest zapisywany jako globalnie wyłączony i włączony tylko dla tej sesji.",
+        scopeEverywhereHint: "Serwer jest zapisywany i włączony dla każdej sesji.",
+        toolAccess: {
+          label: "Dostęp do narzędzi",
+          loading: "Ładowanie narzędzi…",
+          loadFailed: "Nie udało się załadować narzędzi.",
+          noTools: "Brak narzędzi dostępnych dla tego konektora.",
+          summary: "{enabled} z {total} narzędzi włączonych",
+          summaryOne: "{enabled} z {total} narzędzia włączone",
+        },
         enabledCount: "{count} wł.",
         loadingSkills: "Ładowanie umiejętności…",
         skillsLoadFailed: "Nie udało się załadować umiejętności.",

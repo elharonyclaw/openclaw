@@ -13,8 +13,10 @@ import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
+import { createStorageMock } from "../../test-helpers/storage.ts";
 import { createTestChatPane, type TestChatPane } from "./chat-pane.test-support.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { createPageState } from "./chat-state-page.ts";
 import {
   dismissConfirmedActionPopovers,
   openChatRewindConfirmation,
@@ -101,6 +103,91 @@ describe("chat pane first-turn attachment lifecycle", () => {
       ]);
     } finally {
       pane.disconnectedCallback();
+    }
+  });
+});
+
+describe("chat pane command recovery lifecycle", () => {
+  it("restores a late failed command only after returning to its submitted session", async () => {
+    vi.stubGlobal("sessionStorage", createStorageMock());
+    const sent = createDeferred<unknown>();
+    const request = vi.fn((method: string) => {
+      if (method === "chat.send") {
+        return sent.promise;
+      }
+      if (method === "chat.history") {
+        return Promise.resolve({ messages: [] });
+      }
+      if (method === "sessions.list") {
+        return Promise.resolve({ count: 0, sessions: [] });
+      }
+      if (method === "taskSuggestions.list") {
+        return Promise.resolve({ suggestions: [] });
+      }
+      if (method === "session.suggestions.list") {
+        return Promise.resolve({ role: "owner", suggestions: [] });
+      }
+      return Promise.resolve({});
+    });
+    const client = { request } as unknown as GatewayBrowserClient;
+    const sessions = {} as SessionCapability;
+    const { pane } = createTestChatPane({ client, sessions });
+    const state = createPageState(
+      pane.context,
+      pane.chatState.createRenderLifecycle(),
+      pane,
+      new Map(),
+    );
+    const submittedAttachment = {
+      id: "submitted-attachment",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AAA",
+    };
+    const selectedAttachment = {
+      id: "selected-attachment",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,BBB",
+    };
+    state.sessionKey = "agent:main:first";
+    state.client = client;
+    state.connected = true;
+    state.connectionEpoch = 4;
+    state.chatRunId = "active-run";
+    state.chatStream = "Waiting for approval";
+    state.loadAssistantIdentity = vi.fn(async () => undefined);
+    pane.state = state;
+    pane.sessionKey = state.sessionKey;
+    pane.chatState.attach(state);
+    pane.chatState.startComposerPersistence();
+
+    try {
+      state.handleChatDraftChange("/approve approval-123 allow-once");
+      pane.chatState.updateComposerAttachments([submittedAttachment]);
+      const send = state.handleSendChat();
+      await vi.waitFor(() =>
+        expect(request.mock.calls.some(([method]) => method === "chat.send")).toBe(true),
+      );
+
+      pane.switchPaneSession("agent:main:second");
+      state.handleChatDraftChange("second-session draft");
+      pane.chatState.updateComposerAttachments([selectedAttachment]);
+      state.lastError = "second-session error";
+      state.chatError = "second-session error";
+
+      sent.resolve({ runId: "approval-run", status: "error" });
+      await send;
+
+      expect(state.sessionKey).toBe("agent:main:second");
+      expect(state.chatMessage).toBe("second-session draft");
+      expect(state.chatAttachments).toEqual([selectedAttachment]);
+      expect(state.lastError).toBe("second-session error");
+      expect(state.chatError).toBe("second-session error");
+
+      pane.switchPaneSession("agent:main:first");
+      expect(state.chatMessage).toBe("/approve approval-123 allow-once");
+      expect(state.chatAttachments).toEqual([submittedAttachment]);
+    } finally {
+      pane.chatState.hostDisconnected();
     }
   });
 });

@@ -29,6 +29,7 @@ import { patchChatSessionSettings } from "./chat-settings-patches.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import {
   admitStoredChatComposerQueueItem,
+  ChatComposerPersistence,
   listStoredChatOutboxes,
   loadChatComposerSnapshot,
   resolveStoredChatOutboxScope,
@@ -71,6 +72,7 @@ function clientWithRequest(request: unknown): ChatHost["client"] {
 type TestChatHost = Omit<ChatHost, "settings"> & {
   applySettings: (next: UiSettings) => void;
   basePath: string;
+  chatComposerFallbackByScope: ChatPageHost["chatComposerFallbackByScope"];
   chatAvatarUrl: string | null;
   chatAvatarSource?: string | null;
   chatAvatarStatus?: "none" | "local" | "remote" | "data" | null;
@@ -290,6 +292,16 @@ function queueScopeKey(host: TestChatHost, sessionKey: string, agentId?: string)
   return storedChatOutboxScopeKey(resolveStoredChatOutboxScope(host, sessionKey, agentId));
 }
 
+function enableComposerRecovery(host: TestChatHost): ChatComposerPersistence {
+  const submittedDraft = host.chatMessage;
+  host.chatMessage = "";
+  const persistence = new ChatComposerPersistence(() => host);
+  persistence.start();
+  host.chatMessage = submittedDraft;
+  host.chatComposerRecovery = persistence;
+  return persistence;
+}
+
 function fetchInit(source: MockCallSource, callIndex: number) {
   return requireRecord(mockArg(source, callIndex, 1, `fetch init ${callIndex}`), "fetch init");
 }
@@ -369,6 +381,7 @@ function makeHost(overrides?: MakeHostOverrides): TestChatHost | TestChatHostWit
     chatInputHistoryIndex: -1,
     chatDraftBeforeHistory: null,
     chatAttachments: [],
+    chatComposerFallbackByScope: {},
     chatQueue: [],
     chatQueueByScope: {},
     chatRunId: null,
@@ -1385,6 +1398,45 @@ describe("handleSendChat", () => {
     expect(host.chatAttachments).toStrictEqual([attachment]);
     expect(host.chatRunId).toBeNull();
   });
+
+  it.each([
+    {
+      command: "/approve approval-123 allow-once",
+      expectedMethod: "chat.send",
+      runId: "run-main",
+    },
+    {
+      command: "/redirect start over",
+      expectedMethod: "sessions.steer",
+      runId: null,
+    },
+  ])(
+    "does not dispatch $command after a pending picker changes the selected global agent",
+    async ({ command, expectedMethod, runId }) => {
+      const settingsPatch = createDeferred<boolean>();
+      const host = makeHost({
+        requestHandlers: {
+          "chat.send": { status: "started" },
+          "sessions.steer": { status: "started" },
+        },
+        agentsList: { defaultId: "main", mainKey: "main", scope: "per-sender" },
+        assistantAgentId: "work",
+        chatMessage: command,
+        chatRunId: runId,
+        pendingSettingsPatches: { global: settingsPatch.promise },
+        sessionKey: "global",
+      });
+
+      const send = handleSendChat(host);
+      expect(await raceWithMacrotask(send)).toBe("pending");
+      host.assistantAgentId = "other";
+      settingsPatch.resolve(true);
+      await send;
+
+      expect(host.request).not.toHaveBeenCalledWith(expectedMethod, expect.anything());
+      expect(host.chatMessage).toBe(command);
+    },
+  );
 
   it.each([
     {
@@ -3020,6 +3072,127 @@ describe("handleSendChat", () => {
     expect(host.chatMessage).toBe("");
     expect(navigateChatInputHistory(host, "up")).toBe(true);
     expect(host.chatMessage).toBe("/approve approval-123 allow-once");
+  });
+
+  it.each([
+    {
+      error: new GatewayRequestError({
+        code: "INVALID_REQUEST",
+        message: "approval rejected",
+        retryable: false,
+      }),
+      expectedDraft: "/approve approval-123 allow-once",
+      label: "definite Gateway rejection",
+    },
+    {
+      error: new Error("connection closed before the response"),
+      expectedDraft: "",
+      label: "ambiguous transport failure",
+    },
+  ])("handles a $label without risking duplicate command execution", async (testCase) => {
+    vi.stubGlobal("sessionStorage", createStorageMock());
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": () => Promise.reject(testCase.error),
+      },
+      chatRunId: "run-main",
+      chatMessage: "/approve approval-123 allow-once",
+      sessionKey: "agent:main",
+      settings: { gatewayUrl: "ws://gateway.test/control" },
+    });
+    const persistence = enableComposerRecovery(host);
+
+    try {
+      await handleSendChat(host);
+      expect(host.chatMessage).toBe(testCase.expectedDraft);
+    } finally {
+      persistence.stop();
+    }
+  });
+
+  it("recovers a delayed failed local command under its submitted session", async () => {
+    vi.stubGlobal("sessionStorage", createStorageMock());
+    const command = createDeferred<Awaited<ReturnType<ExecuteSlashCommand>>>();
+    executeSlashCommandMock.mockImplementationOnce(() => command.promise);
+    const onLocalCommandSendRejected = vi.fn();
+    const failedAttachment = {
+      id: "redirect-a",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AAA",
+    };
+    const currentAttachment = {
+      id: "redirect-b",
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,BBB",
+    };
+    const host = makeHost({
+      requestHandlers: {},
+      connectionEpoch: 1,
+      chatAttachments: [failedAttachment],
+      chatMessage: "/redirect retry this",
+      sessionKey: "agent:a",
+      settings: { gatewayUrl: "ws://gateway.test/control" },
+    });
+    const persistence = enableComposerRecovery(host);
+
+    try {
+      const send = handleSendChat(host, undefined, { onLocalCommandSendRejected });
+      await waitForFast(() => expect(executeSlashCommandMock).toHaveBeenCalledOnce());
+      host.sessionKey = "agent:b";
+      host.chatMessage = "session B draft";
+      host.chatAttachments = [currentAttachment];
+      host.lastError = "session B error";
+      host.chatError = "session B error";
+      command.resolve({ content: "Redirect failed.", failed: true });
+      await send;
+
+      const failedScopeKey = queueScopeKey(host, "agent:a");
+      expect(onLocalCommandSendRejected).not.toHaveBeenCalled();
+      expect(host.chatMessage).toBe("session B draft");
+      expect(host.chatAttachments).toEqual([currentAttachment]);
+      expect(host.lastError).toBe("session B error");
+      expect(host.chatError).toBe("session B error");
+      expect(loadChatComposerSnapshot(host, "agent:a")?.draft).toBe("/redirect retry this");
+      expect(host.chatComposerFallbackByScope[failedScopeKey]?.attachments).toEqual([
+        failedAttachment,
+      ]);
+    } finally {
+      persistence.stop();
+    }
+  });
+
+  it("discards delayed command recovery after the Gateway connection is replaced", async () => {
+    vi.stubGlobal("sessionStorage", createStorageMock());
+    const sent = createDeferred<unknown>();
+    const host = makeHost({
+      requestHandlers: {
+        "chat.send": () => sent.promise,
+      },
+      connectionEpoch: 1,
+      chatRunId: "run-main",
+      chatMessage: "/approve approval-123 allow-once",
+      sessionKey: "agent:a",
+      settings: { gatewayUrl: "ws://gateway.test/control" },
+    });
+
+    const send = handleSendChat(host);
+    await waitForFast(() =>
+      expect(host.request.mock.calls.some(([method]) => method === "chat.send")).toBe(true),
+    );
+    host.client = clientWithRequest(makeRequestMock({}));
+    host.connectionEpoch = 2;
+    host.sessionKey = "agent:b";
+    host.chatMessage = "replacement connection draft";
+    host.lastError = "replacement connection error";
+    host.chatError = "replacement connection error";
+    sent.resolve({ runId: "stale-approval-run", status: "error" });
+    await send;
+
+    expect(host.chatMessage).toBe("replacement connection draft");
+    expect(host.lastError).toBe("replacement connection error");
+    expect(host.chatError).toBe("replacement connection error");
+    expect(loadChatComposerSnapshot(host, "agent:a")).toBeNull();
+    expect(host.chatComposerFallbackByScope).toEqual({});
   });
 
   it("routes /side through the same session companion path", async () => {

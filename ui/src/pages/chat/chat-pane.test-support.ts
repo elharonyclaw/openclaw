@@ -28,7 +28,13 @@ export type TestChatPane = HTMLElement & {
   catalogMessages: unknown[];
   active: boolean;
   chatMessagesBySession?: ChatMessageCache;
-  chatState: { attach: (state: ChatPageHost) => void };
+  chatState: {
+    attach: (state: ChatPageHost) => void;
+    createRenderLifecycle: () => ChatPageHost["renderLifecycle"];
+    hostDisconnected: () => void;
+    startComposerPersistence: () => void;
+    updateComposerAttachments: (next: ChatPageHost["chatAttachments"]) => void;
+  };
   context: ApplicationContext;
   state: ChatPageHost;
   connectedClient: GatewayBrowserClient | null;
@@ -124,6 +130,7 @@ export function createSessionContext(
     (snapshot: ApplicationContext["gateway"]["snapshot"]) => void
   >();
   return {
+    basePath: "",
     gateway: {
       snapshot: {
         client,
@@ -155,6 +162,7 @@ export function createSessionContext(
         }
       },
     },
+    agentSelection: { state: { selectedId: "main" } },
     agents: { state: { agentsList: null } },
     config: {
       current: {

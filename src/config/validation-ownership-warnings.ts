@@ -4,6 +4,23 @@ import { collectAgentOwnershipWarnings } from "./agent-ownership-warnings.js";
 import { listLegacyOwnershipWarnings } from "./legacy.default-agent-owner.js";
 import type { ConfigValidationIssue, OpenClawConfig } from "./types.js";
 
+/** Computes ownership warnings from the latest resolved plugin registry. */
+export function collectCurrentAgentOwnershipWarnings(params: {
+  config: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  manifestRecords?: readonly PluginManifestRecord[];
+}): ConfigValidationIssue[] {
+  if (listAgentEntriesWithSource(params.config).length <= 1) {
+    return [];
+  }
+  const ambientChannelIds = listChannelIdsForOwnershipMigration({
+    config: params.config,
+    env: params.env,
+    ...(params.manifestRecords ? { manifestRecords: params.manifestRecords } : {}),
+  });
+  return collectAgentOwnershipWarnings(params.config, ambientChannelIds);
+}
+
 /** Replaces ownership warnings computed before legacy role materialization. */
 export function refreshMaterializedAgentOwnershipWarnings(params: {
   warnings: readonly ConfigValidationIssue[];
@@ -39,3 +56,4 @@ export function refreshMaterializedAgentOwnershipWarnings(params: {
     return true;
   });
 }
+import { listAgentEntriesWithSource } from "../agents/agent-scope.js";

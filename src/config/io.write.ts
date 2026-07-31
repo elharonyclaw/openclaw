@@ -4,7 +4,6 @@ import { isDeepStrictEqual } from "node:util";
 import { listAgentEntries, tryResolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { pinSoleAgentWorkspaceForFleetExpansion } from "./agent-workspace-ownership.js";
 import { maintainConfigBackups } from "./backup-rotation.js";
 import { collectChangedPaths } from "./config-change-paths.js";
 import {
@@ -35,6 +34,7 @@ import {
 import type { ConfigIoContext } from "./io.context.js";
 import { planCronStoreWrite, prepareLegacyCronOwnerHandoffs } from "./io.cron-owner-handoff.js";
 import { recordConfigWriteMetadata } from "./io.meta.js";
+import { materializeRetainedOwnerForTopologyWrite } from "./io.ownership-topology-materialization.js";
 import { assertAutomaticBindingsWriteAllowed } from "./io.ownership-write-guard.js";
 import {
   collectEnvRefPaths,
@@ -90,10 +90,7 @@ import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import { isSameFixedSessionStoreConfig } from "./sessions/session-store-config.js";
 import type { OpenClawConfig } from "./types.js";
-import {
-  materializeLegacyAgentOwnershipForActiveChannelsResult,
-  validateConfigObjectRawWithPlugins,
-} from "./validation.js";
+import { validateConfigObjectRawWithPlugins } from "./validation.js";
 
 export async function writeConfigFileFromContext(
   context: ConfigIoContext,
@@ -180,37 +177,22 @@ export async function writeConfigFileFromContext(
       agents: { ...nextConfig.agents, ownership: "explicit" },
     };
   }
-  const retainedFleetOwner =
-    retainedLegacyDefaultAgentId &&
-    writesOwnershipTopology &&
-    nextAgentIds.has(normalizeAgentId(retainedLegacyDefaultAgentId))
-      ? retainedLegacyDefaultAgentId
-      : undefined;
-  const roleMaterializationAgentId = previousSoleHandoffAgentId ?? retainedFleetOwner;
-  const workspacePin = roleMaterializationAgentId
-    ? pinSoleAgentWorkspaceForFleetExpansion({
-        sourceConfig: snapshot.config,
-        targetConfig: nextConfig,
-        agentId: roleMaterializationAgentId,
-        env: deps.env,
-      })
-    : { config: nextConfig, insertedPaths: [] as string[][] };
-  nextConfig = workspacePin.config;
-  let transitionInsertedPaths = [
-    ...workspacePin.insertedPaths,
+  const topologyMaterialization = materializeRetainedOwnerForTopologyWrite({
+    sourceConfig: snapshot.config,
+    targetConfig: nextConfig,
+    previousSoleHandoffAgentId,
+    retainedLegacyDefaultAgentId,
+    writesOwnershipTopology,
+    nextAgentIds,
+    env: deps.env,
+  });
+  nextConfig = topologyMaterialization.config;
+  const transitionInsertedPaths = [
+    ...topologyMaterialization.insertedPaths,
     ...(shouldStampOwnershipGeneration ? [["agents", "ownership"]] : []),
   ];
-  if (roleMaterializationAgentId) {
-    const materialized = materializeLegacyAgentOwnershipForActiveChannelsResult(
-      nextConfig,
-      roleMaterializationAgentId,
-      deps.env,
-      undefined,
-      { materializeWorkspace: true },
-    );
-    nextConfig = materialized.config;
-    transitionInsertedPaths = [...transitionInsertedPaths, ...materialized.insertedPaths];
-  } else if (
+  if (
+    !topologyMaterialization.ownerAgentId &&
     entersMultiAgent &&
     previousSoleAgentId &&
     !previousSoleRemains &&
@@ -353,8 +335,8 @@ export async function writeConfigFileFromContext(
   const validationCandidate = containsConfigIncludeDirective(validationSourceCandidate)
     ? context.resolveRuntimePreflightSourceConfig(validationSourceCandidate as OpenClawConfig)
     : validationSourceCandidate;
-  const validationWorkspacePluginDirectories = workspacePin.pluginPath
-    ? await createWorkspacePluginDirectory(deps.fs, workspacePin.pluginPath)
+  const validationWorkspacePluginDirectories = topologyMaterialization.pluginPath
+    ? await createWorkspacePluginDirectory(deps.fs, topologyMaterialization.pluginPath)
     : [];
   let validated: ReturnType<typeof validateConfigObjectRawWithPlugins>;
   try {
@@ -582,10 +564,10 @@ export async function writeConfigFileFromContext(
           // honor a new fence, so this protects only the inspected ownership boundary.
           await cronStoreWritePlan.recheckExplicitDestination();
         }
-        if (workspacePin.pluginPath) {
+        if (topologyMaterialization.pluginPath) {
           createdWorkspacePluginDirectories = await createWorkspacePluginDirectory(
             deps.fs,
-            workspacePin.pluginPath,
+            topologyMaterialization.pluginPath,
           );
         }
         // Emit the warning before the final conflict guard. After that guard, the

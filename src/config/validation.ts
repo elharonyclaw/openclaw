@@ -13,7 +13,6 @@ import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot
 import { validateJsonSchemaValue } from "../plugins/schema-validator.js";
 import { resolveWebSearchInstallCatalogEntries } from "../plugins/web-search-install-catalog.js";
 import { isRecord } from "../utils.js";
-import { collectAgentOwnershipWarnings } from "./agent-ownership-warnings.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "./bundled-channel-config-metadata.generated.js";
 import {
   collectChannelDmPolicyMetadata,
@@ -40,7 +39,10 @@ import {
   normalizeBundledChannelId,
 } from "./validation-channel-rules.js";
 import { validateConfigObjectRaw } from "./validation-core.js";
-import { refreshMaterializedAgentOwnershipWarnings } from "./validation-ownership-warnings.js";
+import {
+  collectCurrentAgentOwnershipWarnings,
+  refreshMaterializedAgentOwnershipWarnings,
+} from "./validation-ownership-warnings.js";
 import {
   collectExplicitPluginReferences,
   resolveExplicitPluginReferencePath,
@@ -218,18 +220,11 @@ function validateConfigObjectWithPluginsBase(
       })
     : base.config;
   const collectOwnershipWarnings = () =>
-    listAgentEntriesWithSource(config).length > 1
-      ? collectAgentOwnershipWarnings(
-          config,
-          listChannelIdsForOwnershipMigration({
-            config,
-            env: opts.env,
-            ...(registryInfo?.registry.plugins
-              ? { manifestRecords: registryInfo.registry.plugins }
-              : {}),
-          }),
-        )
-      : [];
+    collectCurrentAgentOwnershipWarnings({
+      config,
+      env: opts.env,
+      manifestRecords: registryInfo?.registry.plugins,
+    });
   const ownershipWarnings = collectOwnershipWarnings();
   if (opts.pluginValidation === "skip") {
     return { ok: true, config, warnings: ownershipWarnings };

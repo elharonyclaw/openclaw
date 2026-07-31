@@ -165,6 +165,7 @@ describe("listPersistedBundledPluginLocationBridges", () => {
   });
 
   it.each([
+    ["opencode", "@openclaw/opencode-provider"],
     ["teams-meetings", "@openclaw/teams-meetings"],
     ["zoom-meetings", "@openclaw/zoom-meetings"],
   ])(

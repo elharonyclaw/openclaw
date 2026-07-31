@@ -359,6 +359,14 @@ describe("bundled plugin build entries", () => {
     }
   });
 
+  it("excludes the externalized OpenCode provider from bundled artifacts", () => {
+    const artifacts = listBundledPluginPackArtifacts();
+
+    expect(artifacts).not.toContain("dist/extensions/opencode/index.js");
+    expect(artifacts).not.toContain("dist/extensions/opencode/openclaw.plugin.json");
+    expect(artifacts).not.toContain("dist/extensions/opencode/package.json");
+  });
+
   it("keeps bundled channel secret contracts on packed top-level sidecars", () => {
     const artifacts = listBundledPluginPackArtifacts();
     const excludedPackageDirs = collectRootPackageExcludedExtensionDirs();

@@ -1,6 +1,10 @@
+import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 
 export function isCronInvalidRequestError(err: unknown): boolean {
+  if (err instanceof AgentSelectionRequiredError) {
+    return true;
+  }
   const message = formatErrorMessage(err);
   return (
     message.startsWith("unknown cron job id:") ||

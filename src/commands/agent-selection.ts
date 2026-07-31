@@ -43,14 +43,14 @@ export async function resolveCliAgentId(params: {
 }): Promise<string> {
   const explicit = params.agentInput?.trim();
   const agentIds = listAgentIds(params.cfg);
+  const soleAgentId = tryResolveSoleAgentId(params.cfg);
   if (explicit) {
     const normalized = normalizeAgentId(explicit);
-    if (!agentIds.includes(normalized)) {
+    if (!agentIds.includes(normalized) && normalized !== soleAgentId) {
       throw new Error(`Unknown agent id "${explicit}". Run "openclaw agents list" to choose one.`);
     }
     return normalized;
   }
-  const soleAgentId = tryResolveSoleAgentId(params.cfg);
   // Sole-agent ownership resolves implicitly regardless of agents.ownership. This mirrors
   // resolveGatewayAgentSelectionState's `sole` projection and selectionRequired=false contract.
   if (soleAgentId && params.requireExplicit !== true) {

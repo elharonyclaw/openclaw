@@ -122,7 +122,7 @@ describe("explicit ambient agent targets", () => {
 });
 
 describe("multi-agent ambient ownership warnings", () => {
-  it("warns for interval-only heartbeat defaults but not an explicit heartbeat owner", () => {
+  it("does not warn for shared heartbeat defaults or an explicit heartbeat owner", () => {
     const config = (heartbeat: { every: string; agentId?: string }): OpenClawConfig => ({
       agents: {
         ownership: "explicit",
@@ -132,7 +132,7 @@ describe("multi-agent ambient ownership warnings", () => {
       talk: { agentId: "ops" },
     });
 
-    expect(collectAgentOwnershipWarnings(config({ every: "15m" }))).toContainEqual(
+    expect(collectAgentOwnershipWarnings(config({ every: "15m" }))).not.toContainEqual(
       expect.objectContaining({ path: "agents.defaults.heartbeat.agentId" }),
     );
     expect(

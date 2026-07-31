@@ -20,7 +20,8 @@ export function collectAgentOwnershipWarnings(
     });
   }
   const hasPerAgentHeartbeat = agents.some((entry) => Boolean(entry.heartbeat));
-  if (!hasPerAgentHeartbeat && !normalizeOptionalString(cfg.agents?.defaults?.heartbeat?.agentId)) {
+  const hasDefaultHeartbeat = cfg.agents?.defaults?.heartbeat !== undefined;
+  if (!hasPerAgentHeartbeat && !hasDefaultHeartbeat) {
     warnings.push({
       path: "agents.defaults.heartbeat.agentId",
       message:

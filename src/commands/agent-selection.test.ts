@@ -15,6 +15,18 @@ describe("resolveCliAgentId", () => {
     ).resolves.toBe("solo");
   });
 
+  it("accepts explicit main for a rosterless legacy config", async () => {
+    await expect(
+      resolveCliAgentId({
+        cfg: {},
+        runtime: defaultRuntime,
+        agentInput: "main",
+        surface: "test command",
+        deps: { interactive: false },
+      }),
+    ).resolves.toBe("main");
+  });
+
   it("raises a typed actionable error for non-interactive multi-agent selection", async () => {
     await expect(
       resolveCliAgentId({

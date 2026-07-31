@@ -37,7 +37,7 @@ import {
 } from "./steer-lifecycle.ts";
 import { isInflightSteer } from "./steered-chip.ts";
 
-export type DirectChatSendAttempt =
+type DirectChatSendAttempt =
   | { kind: "ack"; ack: ChatSendAck }
   | { kind: "not-sent" }
   | { kind: "rejected"; retryRunId?: string }
@@ -101,7 +101,7 @@ export async function attemptChatMessageWithGeneratedRunId(
   }
 }
 
-export async function sendChatMessageWithGeneratedRunId(
+async function sendChatMessageWithGeneratedRunId(
   state: ChatState,
   message: string,
   attachments?: ChatAttachment[],

@@ -7,12 +7,12 @@ import {
 } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { resolveChatComposerMemoryFallback } from "./composer-fallback.ts";
 import {
   chatComposerCommandClearResult,
   chatComposerCommandRecoveryScope,
   nextChatComposerMemoryFallbackSequence,
   resolveChatComposerFallbackCommandRun,
-  resolveChatComposerMemoryFallback,
   resolveStoredChatOutboxScope,
   storedChatOutboxScopeKey,
   type ChatComposerCommandRecovery,
@@ -36,7 +36,7 @@ export type ChatCommandComposerRecovery = {
   submittedFallbackSequence?: number;
 };
 
-export type ChatCommandComposerRecoveryResult = {
+type ChatCommandComposerRecoveryResult = {
   attachmentsRetained: boolean;
   restored: boolean;
 };
@@ -81,17 +81,6 @@ export function chatCommandComposerRetryState(
     fallbackMatch.scopeKey,
   );
   return commandRun ? { runId: commandRun.id } : {};
-}
-
-export function chatCommandComposerRetryRunId(
-  host: ChatHost,
-  snapshot: {
-    attachments?: ChatAttachment[];
-    draft: string;
-  },
-  scope = resolveStoredChatOutboxScope(host, host.sessionKey),
-): string | undefined {
-  return chatCommandComposerRetryState(host, snapshot, scope)?.runId;
 }
 
 export function beginChatCommandComposerRecovery(

@@ -6,7 +6,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { createTestChatPane } from "./chat-pane.test-support.ts";
-import { chatCommandComposerRetryRunId } from "./chat-send.ts";
+import { chatCommandComposerRetryState } from "./chat-send.ts";
 import { createPageState } from "./chat-state-page.ts";
 import { loadChatComposerSnapshot } from "./composer-persistence.ts";
 
@@ -198,17 +198,17 @@ describe("chat pane command recovery lifecycle", () => {
       );
       expect(expiredFallback).toBeDefined();
       expect(
-        chatCommandComposerRetryRunId(state, {
+        chatCommandComposerRetryState(state, {
           attachments: [resubmittedAttachment],
           draft: "/approve approval-456 allow-once",
-        }),
+        })?.runId,
       ).toBe(resubmittedRunId);
       expiredFallback!.commandRunIdExpiresAtMs = Date.now() - 1;
       expect(
-        chatCommandComposerRetryRunId(state, {
+        chatCommandComposerRetryState(state, {
           attachments: [resubmittedAttachment],
           draft: "/approve approval-456 allow-once",
-        }),
+        })?.runId,
       ).toBeUndefined();
 
       const staleSend = state.handleSendChat();

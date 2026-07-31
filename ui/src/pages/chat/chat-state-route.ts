@@ -19,12 +19,12 @@ import { refreshCurrentChatSessionList } from "./chat-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { invalidateImageLightbox } from "./chat-state-page.ts";
 import { cancelChatStreamRenderFrame } from "./chat-state-render.ts";
+import { resolveChatComposerMemoryFallback } from "./composer-fallback.ts";
 import {
   CHAT_COMPOSER_DRAFT_STORAGE_ERROR,
   nextChatComposerMemoryFallbackSequence,
   persistChatComposerState,
   resolveChatComposerFallbackCommandRun,
-  resolveChatComposerMemoryFallback,
   resolveStoredChatOutboxScope,
   restoreChatComposerState,
   storedChatOutboxScopeKey,

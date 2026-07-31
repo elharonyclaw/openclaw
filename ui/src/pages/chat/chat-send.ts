@@ -1,11 +1,9 @@
 export {
   beginChatCommandComposerRecovery,
   cancelPendingSendBeforeRequest,
-  chatCommandComposerRetryRunId,
   chatCommandComposerRetryState,
   checkpointChatCommandComposerClear,
   completeChatCommandComposerSend,
-  pendingComposerRestorePlan,
   restoreChatCommandComposer,
 } from "./chat-send-composer.ts";
 export type { ChatCommandComposerRecovery } from "./chat-send-composer.ts";

@@ -503,7 +503,7 @@ export class CronStoreTopologyMismatchError extends Error {
 }
 
 /** Fingerprints all persisted topology, including order, while excluding mutable runtime columns. */
-export function cronRowTopologyFingerprint(row: CronJobRow): string {
+function cronRowTopologyFingerprint(row: CronJobRow): string {
   const {
     store_key: _storeKey,
     updated_at: _updatedAt,

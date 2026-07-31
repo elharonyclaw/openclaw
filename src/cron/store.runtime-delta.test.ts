@@ -106,4 +106,37 @@ describe("cron state-only runtime deltas", () => {
       }),
     ).resolves.toBeDefined();
   });
+
+  it("leaves the in-memory store untouched when a later job conflicts", async () => {
+    const { storePath } = await makeStorePath();
+    await saveCronStore(storePath, { version: 1, jobs: [job("runtime-a"), job("runtime-b")] });
+    const loaded = await loadCronJobsStoreWithConfigJobs(storePath);
+    const baseline = runtimeBaseline(loaded.store);
+    const concurrent = structuredClone(loaded.store);
+    const stale = structuredClone(loaded.store);
+    concurrent.jobs[0]!.state = { nextRunAtMs: 101 };
+    concurrent.jobs[1]!.state = { nextRunAtMs: 202 };
+    stale.jobs[1]!.state = { nextRunAtMs: 404 };
+
+    await saveCronJobsStore(storePath, concurrent, {
+      stateOnly: true,
+      expectedStoreEpoch: loaded.storeEpoch,
+      expectedRuntimeRevision: loaded.runtimeRevision,
+      expectedRuntimeStateByJobId: baseline,
+    });
+    const staleBeforeSave = structuredClone(stale);
+    await expect(
+      saveCronJobsStore(storePath, stale, {
+        stateOnly: true,
+        expectedStoreEpoch: loaded.storeEpoch,
+        expectedRuntimeRevision: loaded.runtimeRevision,
+        expectedRuntimeStateByJobId: baseline,
+      }),
+    ).rejects.toBeInstanceOf(CronRuntimeRevisionMismatchError);
+
+    expect(stale).toEqual(staleBeforeSave);
+    expect((await loadCronStore(storePath)).jobs.map((entry) => entry.state.nextRunAtMs)).toEqual([
+      101, 202,
+    ]);
+  });
 });

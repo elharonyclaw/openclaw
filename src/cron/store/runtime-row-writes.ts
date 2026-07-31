@@ -37,10 +37,10 @@ export function writeCronRuntimeRowDeltas(params: {
         ]),
       )
     : undefined;
-  // The caller owns the shared-state write transaction, so a later conflict
-  // rolls back earlier row updates. Topology epochs fence schedule changes;
-  // runtime-only writes must not rewrite topology-derived sidecars.
-  for (const job of params.store.jobs) {
+  // Resolve against a detached store: SQLite may roll back after any row update,
+  // and the caller publishes the committed snapshot only after the transaction returns.
+  const mergedStore = structuredClone(params.store);
+  for (const job of mergedStore.jobs) {
     if (revisionChanged) {
       const current = currentStates?.get(job.id);
       const hasExpected = params.expectedRuntimeStateByJobId?.has(job.id) === true;

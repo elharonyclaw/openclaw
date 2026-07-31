@@ -229,7 +229,7 @@ export async function saveCronJobsStore(
   if (opts?.stateOnly) {
     // Hot-path timer updates only mutate runtime columns; full config JSON stays
     // untouched so user-authored cron definitions do not churn.
-    return runOpenClawStateWriteTransaction(
+    const result = runOpenClawStateWriteTransaction(
       ({ db }) => {
         const storeEpoch = readCronStoreEpoch(db, storeKey);
         if (opts.expectedStoreEpoch !== undefined && opts.expectedStoreEpoch !== storeEpoch) {
@@ -257,6 +257,11 @@ export async function saveCronJobsStore(
       },
       { env: opts?.env },
     );
+    // Publish the merged runtime snapshot only after SQLite has committed. Failed
+    // conflict, revision, and commit paths therefore leave the caller's store intact.
+    store.version = result.store.version;
+    store.jobs = structuredClone(result.store.jobs);
+    return result;
   }
   assertCronStoreCanPersist(store);
   return runOpenClawStateWriteTransaction(

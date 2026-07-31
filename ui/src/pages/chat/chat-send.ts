@@ -1,7 +1,11 @@
 export {
+  beginChatCommandComposerRecovery,
   cancelPendingSendBeforeRequest,
+  checkpointChatCommandComposerClear,
   pendingComposerRestorePlan,
+  restoreChatCommandComposer,
 } from "./chat-send-composer.ts";
+export type { ChatCommandComposerRecovery } from "./chat-send-composer.ts";
 export {
   chatOutboxDrainDependencies,
   sendChatMessageNow,

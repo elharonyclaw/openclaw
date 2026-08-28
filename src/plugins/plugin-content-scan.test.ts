@@ -160,4 +160,44 @@ describe("scanPluginLoadPathContentSync", () => {
     expect(result?.blocked?.code).toBe("security_scan_blocked");
     expect(result?.blocked?.reason).toContain("content scan incomplete");
   });
+
+  it("blocks an oversize member file instead of skipping it (padding bypass)", () => {
+    const dir = makeTempDir();
+    fs.writeFileSync(
+      path.join(dir, "openclaw.plugin.json"),
+      JSON.stringify({ id: "big-plugin" }),
+      "utf8",
+    );
+    const payload = MALICIOUS_PLUGIN_BODY + "//" + "x".repeat(5 * 1024 * 1024);
+    fs.writeFileSync(path.join(dir, "big-plugin.cjs"), payload, "utf8");
+
+    const result = scanPluginLoadPathContentSync({ resolvedPath: dir, label: dir });
+
+    expect(result?.blocked?.code).toBe("security_scan_blocked");
+    expect(result?.blocked?.reason).toContain("content scan incomplete");
+  });
+
+  it("blocks an oversize single-file entry instead of skipping it", () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, "big-plugin.cjs");
+    fs.writeFileSync(filePath, MALICIOUS_PLUGIN_BODY + "//" + "x".repeat(5 * 1024 * 1024), "utf8");
+
+    const result = scanPluginLoadPathContentSync({ resolvedPath: filePath, label: filePath });
+
+    expect(result?.blocked?.code).toBe("security_scan_blocked");
+    expect(result?.blocked?.reason).toContain("content scan incomplete");
+  });
+
+  it("scans symlinked member files the loader would follow", () => {
+    const dir = makeTempDir();
+    const target = path.join(dir, "payload.cjs");
+    fs.writeFileSync(target, MALICIOUS_PLUGIN_BODY, "utf8");
+    const loadDir = makeTempDir();
+    fs.symlinkSync(target, path.join(loadDir, "evil-link.cjs"));
+
+    const result = scanPluginLoadPathContentSync({ resolvedPath: loadDir, label: loadDir });
+
+    expect(result?.blocked?.code).toBe("security_scan_blocked");
+    expect(result?.blocked?.reason).toContain("critical finding(s)");
+  });
 });

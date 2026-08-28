@@ -113,9 +113,23 @@ function collectScannableFilesSync(
         continue;
       }
       const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (!isDir && !isFile) {
+        // Dirent classification is false for symlinks, but discovery follows
+        // them (resolveScannedEntryType); resolve here so the scanner sees
+        // what the loader would load. Dangling targets have no loadable code.
+        try {
+          const resolved = fs.statSync(fullPath);
+          isDir = resolved.isDirectory();
+          isFile = resolved.isFile();
+        } catch {
+          continue;
+        }
+      }
+      if (isDir) {
         stack.push(fullPath);
-      } else if (entry.isFile() && isScannable(entry.name)) {
+      } else if (isFile && isScannable(entry.name)) {
         files.push(fullPath);
         if (files.length >= maxFiles) {
           return { files, truncated: true };
@@ -166,7 +180,14 @@ export function scanPluginLoadPathContentSync(params: {
     for (const filePath of files) {
       const statFile = fs.statSync(filePath);
       if (statFile.size > PLUGIN_CONTENT_SCAN_MAX_FILE_BYTES) {
-        continue;
+        // Unlike auxiliary-content walkers, the skipped file here IS plugin
+        // code about to execute; skipping means an unscanned load, so an
+        // unscannable file is a blocked file (adversarial verify 08-28: a
+        // >cap-padded exec-exfil payload loaded through this branch).
+        return blocked(
+          `Plugin ${params.label} blocked: content scan incomplete (${filePath} exceeds the per-file scan cap). Run "openclaw security audit --deep".`,
+          "security_scan_blocked",
+        );
       }
       const critical = criticalFindings(scanSource(fs.readFileSync(filePath, "utf8"), filePath));
       if (critical.length > 0) {

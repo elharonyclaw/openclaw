@@ -25,6 +25,7 @@ import type {
   InstallPolicyWarningDetails,
   InstallSafetyOverrides,
 } from "./install-security-scan.types.js";
+import { scanPluginFileContent } from "./plugin-content-scan.js";
 
 type InstallScanLogger = {
   warn?: (message: string) => void;
@@ -1111,6 +1112,16 @@ export async function scanFileInstallSourceRuntime(
     source?: InstallPolicySource;
   },
 ): Promise<InstallSecurityScanResult | undefined> {
+  // Content scan runs before policy and install hooks: file-plugin sources skip
+  // the registry funnels, so this gate is their only code-level inspection.
+  const contentBlocked = await scanPluginFileContent({
+    filePath: params.filePath,
+    label: params.pluginId,
+    logger: params.logger,
+  });
+  if (contentBlocked) {
+    return contentBlocked;
+  }
   const policyResult = await runOperatorInstallPolicy({
     config: params.config,
     dangerouslyForceUnsafeInstall: params.dangerouslyForceUnsafeInstall,

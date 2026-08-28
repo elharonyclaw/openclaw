@@ -42,6 +42,7 @@ import {
 } from "./package-entry-resolution.js";
 import { formatPosixMode, isPathInside, safeRealpathSync, safeStatSync } from "./path-safety.js";
 import { createPluginCacheKey, PluginLruCache } from "./plugin-cache-primitives.js";
+import { scanPluginLoadPathContentSync } from "./plugin-content-scan.js";
 import { tracePluginLifecyclePhase } from "./plugin-lifecycle-trace.js";
 import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
@@ -1275,7 +1276,24 @@ function createPluginScanner(env: NodeJS.ProcessEnv, ownershipUid?: number | nul
   function discoverConfiguredPaths(loadPaths: readonly string[], workspaceDir?: string): void {
     for (const loadPath of loadPaths) {
       if (typeof loadPath === "string" && loadPath.trim()) {
-        discoverFromPath({ rawPath: loadPath.trim(), origin: "config", workspaceDir });
+        const rawPath = loadPath.trim();
+        const resolved = resolveUserPath(rawPath, env);
+        // Config load paths are operator-declared executable code that never
+        // passed an install gate; fail closed on critical scanner findings
+        // before the entry can become a loadable candidate.
+        const contentBlocked = scanPluginLoadPathContentSync({
+          resolvedPath: resolved,
+          label: rawPath,
+        });
+        if (contentBlocked?.blocked) {
+          diagnostics.push({
+            level: "error",
+            message: contentBlocked.blocked.reason,
+            source: resolved,
+          });
+          continue;
+        }
+        discoverFromPath({ rawPath, origin: "config", workspaceDir });
       }
     }
   }

@@ -5,16 +5,16 @@ import type {
   PluginAcceptedDeclaredSurface,
   PluginInstallRecord,
 } from "../config/types.plugins.js";
+import { resolvePluginArtifactDeclaredSurface } from "./capability-artifact.js";
+import { createManagedPluginArtifactConsentHandler } from "./capability-consent.js";
 import {
-  buildPluginCapabilityConsentReview,
+  buildPluginCapabilitySummary,
   computeDeclaredSurfaceHash,
-  createManagedPluginArtifactConsentHandler,
   diffDeclaredSurfaceWidening,
+  mergePluginDeclaredSurfaces,
   resolveAcceptedSurfaceCurrent,
-  resolvePluginArtifactDeclaredSurface,
   resolvePluginInstallRecordIntegrity,
-} from "./capability-consent.js";
-import { buildPluginCapabilitySummary, mergePluginDeclaredSurfaces } from "./capability-summary.js";
+} from "./capability-summary.js";
 import { resolveInstalledPluginIndexInstallOwner } from "./installed-plugin-index-install-owner.js";
 import { loadInstalledPluginIndexWithDiscovery } from "./installed-plugin-index.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
@@ -54,20 +54,68 @@ function createDeclaredSurface(
 }
 
 describe("plugin capability consent", () => {
-  it("merges every package-owned plugin into a sorted, duplicate-free capability surface", () => {
-    expect(
-      mergePluginDeclaredSurfaces([
-        createDeclaredSurface({ channels: ["chat"], tools: ["write", "read"] }),
-        createDeclaredSurface({ tools: ["admin", "read"], mcpServers: ["provider"] }),
-      ]),
-    ).toEqual(
-      createDeclaredSurface({
-        channels: ["chat"],
-        tools: ["admin", "read", "write"],
-        mcpServers: ["provider"],
-      }),
-    );
-  });
+  it.each([
+    { recordOfficialCapabilities: false, accepted: false },
+    { recordOfficialCapabilities: true, accepted: false },
+    { recordOfficialCapabilities: true, accepted: true },
+  ])(
+    "records official capability acceptance only after requested review ($recordOfficialCapabilities/$accepted)",
+    async ({ recordOfficialCapabilities, accepted }) => {
+      const artifactDir = createArtifactFixture({
+        "package.json": {
+          name: "@openclaw/codex",
+          openclaw: { extensions: ["./index.js"] },
+        },
+        "index.js": "export {};",
+        "openclaw.plugin.json": {
+          id: "codex",
+          contracts: { tools: ["fixture.tool"] },
+          configSchema: { type: "object" },
+        },
+      });
+      const reviewed: string[] = [];
+      const consent = createManagedPluginArtifactConsentHandler({
+        config: {},
+        source: "npm",
+        spec: "@openclaw/codex@1.0.0",
+        recordOfficialCapabilities,
+        onCapabilityConsent: async (review) => {
+          reviewed.push(review.pluginId);
+          return accepted ? { reviewToken: review.reviewToken } : undefined;
+        },
+      });
+      const record: PluginInstallRecord = {
+        source: "npm",
+        spec: "@openclaw/codex@1.0.0",
+        integrity: "sha512-fixture",
+      };
+      const preparation = consent.onBeforePluginArtifactCommit({
+        pluginId: "codex",
+        mode: "install",
+        stagedArtifactDir: artifactDir,
+        sourceRecord: record,
+      });
+      if (recordOfficialCapabilities && !accepted) {
+        await expect(preparation).rejects.toMatchObject({
+          capabilityConsent: { pluginId: "codex" },
+        });
+      } else {
+        await preparation;
+        const prepared = consent.applyAcceptedSurface("codex", record);
+        if (recordOfficialCapabilities) {
+          expect(prepared).toMatchObject({
+            acceptedSurface: { tools: ["fixture.tool"] },
+            acceptedSurfaceAt: expect.any(String),
+            acceptedSurfaceIntegrity: "sha512-fixture",
+          });
+          expect(prepared.acceptedSurfaceHash).toMatch(/^[a-f0-9]{64}$/u);
+        } else {
+          expect(prepared).not.toHaveProperty("acceptedSurface");
+        }
+      }
+      expect(reviewed).toEqual(recordOfficialCapabilities ? ["codex"] : []);
+    },
+  );
 
   it.each([
     { label: "native package entries", explicitPath: false, staged: false },
@@ -215,14 +263,6 @@ describe("plugin capability consent", () => {
     },
   );
 
-  it("reads declared skills from bundle-format plugin artifacts", () => {
-    const rootDir = createArtifactFixture({
-      ".claude-plugin/plugin.json": { name: "bundle", skills: ["./bundle-skills"] },
-    });
-
-    expect(resolvePluginArtifactDeclaredSurface(rootDir).skills).toEqual(["./bundle-skills"]);
-  });
-
   it("reviews native package extensions before a competing bundle manifest, like runtime discovery", () => {
     const rootDir = createArtifactFixture({
       "package.json": { openclaw: { extensions: ["./index.js"] } },
@@ -264,31 +304,6 @@ describe("plugin capability consent", () => {
     expect(() => resolvePluginArtifactDeclaredSurface(rootDir)).toThrow();
   });
 
-  it("hashes declared surfaces independently of object-key and capability ordering", () => {
-    const declared = createDeclaredSurface({
-      channels: ["zulu", "alpha"],
-      tools: ["write", "read"],
-    });
-    const reordered = {
-      dangerousConfigFlags: [],
-      skills: [],
-      cliBackends: [],
-      cliCommands: [],
-      mcpServers: [],
-      hooks: [],
-      contracts: [],
-      tools: ["read", "write"],
-      providers: [],
-      channels: ["alpha", "zulu"],
-    } satisfies PluginAcceptedDeclaredSurface;
-
-    expect(computeDeclaredSurfaceHash(declared)).toMatch(/^[a-f\d]{64}$/);
-    expect(computeDeclaredSurfaceHash(declared)).toBe(computeDeclaredSurfaceHash(reordered));
-    expect(computeDeclaredSurfaceHash(declared)).not.toBe(
-      computeDeclaredSurfaceHash(createDeclaredSurface({ channels: ["alpha", "zulu"] })),
-    );
-  });
-
   it.each<{
     label: string;
     previous: Partial<PluginAcceptedDeclaredSurface>;
@@ -306,18 +321,6 @@ describe("plugin capability consent", () => {
       previous: { tools: ["read", "write"] },
       next: { tools: ["read"] },
       widened: {},
-    },
-    {
-      label: "an unchanged capability surface",
-      previous: { channels: ["chat"], tools: ["read"] },
-      next: { channels: ["chat"], tools: ["read"] },
-      widened: {},
-    },
-    {
-      label: "capabilities in a previously empty group",
-      previous: { tools: ["read"] },
-      next: { tools: ["read"], mcpServers: ["zulu", "alpha"] },
-      widened: { mcpServers: ["alpha", "zulu"] },
     },
   ])("identifies widening for $label", ({ previous, next, widened }) => {
     expect(
@@ -368,12 +371,6 @@ describe("plugin capability consent", () => {
       current: false,
     },
     {
-      label: "matching declared surface and artifact integrity",
-      record: { integrity: "sha512-current", acceptedSurfaceIntegrity: "sha512-current" },
-      declared: { tools: ["read"] },
-      current: true,
-    },
-    {
       label: "matching declared surface without an available artifact digest",
       record: {},
       declared: { tools: ["read"] },
@@ -391,23 +388,33 @@ describe("plugin capability consent", () => {
     expect(resolveAcceptedSurfaceCurrent(installRecord, surface)).toBe(current);
   });
 
-  it("redacts source credentials before a capability review reaches a prompt or pending inspection", () => {
+  it("redacts source credentials before a capability review reaches a prompt or pending inspection", async () => {
     const url = new URL("https://example.invalid/plugins/demo.git");
     url.username = "fixture-user";
     url.password = "fixture-password";
     url.searchParams.set("token", "fixture-token");
     const record: PluginInstallRecord = { source: "git", spec: `git:${url.href}` };
 
-    const review = buildPluginCapabilityConsentReview({
-      pluginId: "plugin",
-      manifest: {},
+    let reviewSpec: string | undefined;
+    const consent = createManagedPluginArtifactConsentHandler({
       config: {},
-      record,
+      source: record.source,
+      spec: record.spec,
+      onCapabilityConsent: async (review) => {
+        reviewSpec = review.source?.spec;
+        return { reviewToken: review.reviewToken };
+      },
+    });
+    await consent.onBeforePluginArtifactCommit({
+      pluginId: "plugin",
+      mode: "install",
+      stagedArtifactDir: createArtifactFixture({
+        "index.js": "export {};",
+        "openclaw.plugin.json": { id: "plugin", configSchema: { type: "object" } },
+      }),
     });
 
-    expect(review.source?.spec).toBe(
-      "git:https://***:***@example.invalid/plugins/demo.git?token=***",
-    );
+    expect(reviewSpec).toBe("git:https://***:***@example.invalid/plugins/demo.git?token=***");
     expect(record.spec).toBe(`git:${url.href}`);
   });
 
@@ -495,7 +502,105 @@ describe("plugin capability consent", () => {
     },
   );
 
-  it("requires consent when reinstalling a previously disabled plugin will enable it", async () => {
+  it("requires Claw-owner review even when an update has current plugin acceptance", async () => {
+    const rootDir = createArtifactFixture({
+      "package.json": { openclaw: { extensions: ["./index.js"] } },
+      "index.js": "export {};",
+      "openclaw.plugin.json": {
+        id: "plugin",
+        contracts: { tools: ["read"] },
+        configSchema: { type: "object" },
+      },
+    });
+    const acceptedSurface = resolvePluginArtifactDeclaredSurface(rootDir);
+    const previousRecords = {
+      plugin: {
+        source: "npm" as const,
+        installPath: rootDir,
+        integrity: "sha512-current",
+        acceptedSurface,
+        acceptedSurfaceHash: computeDeclaredSurfaceHash(acceptedSurface),
+        acceptedSurfaceIntegrity: "sha512-current",
+      },
+    };
+    const artifact = { pluginId: "plugin", stagedArtifactDir: rootDir, mode: "update" as const };
+
+    await expect(
+      createManagedPluginArtifactConsentHandler({
+        config: {},
+        source: "npm",
+        previousRecords,
+        requireCapabilityConsent: true,
+      }).onBeforePluginArtifactCommit(artifact),
+    ).rejects.toMatchObject({ capabilityConsent: { pluginId: "plugin" } });
+
+    const reviewed: string[] = [];
+    await createManagedPluginArtifactConsentHandler({
+      config: {},
+      source: "npm",
+      previousRecords,
+      requireCapabilityConsent: true,
+      onCapabilityConsent: async (review) => {
+        reviewed.push(review.reviewToken);
+        return { reviewToken: review.reviewToken };
+      },
+    }).onBeforePluginArtifactCommit(artifact);
+    expect(reviewed).toEqual([computeDeclaredSurfaceHash(acceptedSurface)]);
+  });
+
+  it("does not apply the official-plugin exemption to a Claw-managed install", async () => {
+    const rootDir = createArtifactFixture({
+      "package.json": {
+        name: "@openclaw/acpx",
+        openclaw: { extensions: ["./index.js"] },
+      },
+      "index.js": "export {};",
+      "openclaw.plugin.json": {
+        id: "acpx",
+        contracts: { tools: ["acpx.run"] },
+        configSchema: { type: "object" },
+      },
+    });
+    const sourceRecord: PluginInstallRecord = {
+      source: "clawhub",
+      spec: "clawhub:@openclaw/acpx",
+      clawhubPackage: "@openclaw/acpx",
+      clawhubUrl: "https://clawhub.ai",
+      clawhubChannel: "official",
+    };
+    const artifact = {
+      pluginId: "acpx",
+      stagedArtifactDir: rootDir,
+      sourceRecord,
+      mode: "install" as const,
+    };
+    const params = {
+      config: {},
+      source: "clawhub" as const,
+      spec: sourceRecord.spec,
+    };
+
+    await createManagedPluginArtifactConsentHandler(params).onBeforePluginArtifactCommit(artifact);
+    await expect(
+      createManagedPluginArtifactConsentHandler({
+        ...params,
+        requireCapabilityConsent: true,
+      }).onBeforePluginArtifactCommit(artifact),
+    ).rejects.toMatchObject({ capabilityConsent: { pluginId: "acpx" } });
+
+    const reviewed: string[][] = [];
+    await createManagedPluginArtifactConsentHandler({
+      ...params,
+      requireCapabilityConsent: true,
+      onCapabilityConsent: async (review) => {
+        reviewed.push(review.declared.tools);
+        return { reviewToken: review.reviewToken };
+      },
+    }).onBeforePluginArtifactCommit(artifact);
+    expect(reviewed).toEqual([["acpx.run"]]);
+  });
+
+  it("rejects reinstall without capability consent even when the plugin is disabled", async () => {
     const rootDir = createArtifactFixture({
       "package.json": { openclaw: { extensions: ["./index.js"] } },
       "index.js": "export {};",

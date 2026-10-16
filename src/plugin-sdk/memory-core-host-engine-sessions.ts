@@ -1,304 +1,177 @@
 /** Private-local SDK subpath for memory session transcript helpers. */
-import type { DatabaseSync } from "node:sqlite";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
-import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
-import type { DB as OpenClawAgentDatabase } from "../state/openclaw-agent-db.generated.js";
-import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
+import { isMainThread } from "node:worker_threads";
+import {
+  buildSessionEntry as buildSessionEntryFromHost,
+  listSessionTranscriptCorpusEntriesForAgent as listSessionTranscriptCorpusEntriesFromHost,
+  readSessionResetRecallCutoff as readSessionResetRecallCutoffFromHost,
+} from "../../packages/memory-host-sdk/src/engine-sessions.js";
+import { assertBoundIncognitoMemorySyncAccess } from "../../packages/memory-host-sdk/src/host/openclaw-runtime-session.js";
+import {
+  listSessionTranscriptArchivesReadOnly,
+  listSessionTranscriptInstances,
+} from "../config/sessions/session-accessor.js";
+import { captureSessionActorStorageOwner } from "../config/sessions/session-actor-storage-binding.js";
+import { listSessionTranscriptInstancesInWorker } from "../config/sessions/session-history.js";
+import {
+  projectSessionMetadata,
+  readMemorySessionTargets,
+} from "../config/sessions/session-memory-targets.js";
+import type {
+  MemorySessionSelectors,
+  MemorySessionTarget,
+} from "../config/sessions/session-memory-targets.types.js";
+import { resolveMemorySessionTargetsInWorker } from "../config/sessions/session-transcript-inventory-runtime.js";
+import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
+import { normalizeAgentId } from "../routing/session-key.js";
+import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
+
+export type {
+  MemorySessionSelectors,
+  MemorySessionTarget,
+} from "../config/sessions/session-memory-targets.types.js";
+
+/** @deprecated Await loadArchivedSessionsAsync. Final compatibility day: 2026-12-31. */
+export function loadArchivedSessions(
+  params: Parameters<typeof listSessionTranscriptArchivesReadOnly>[0],
+) {
+  warnPluginSdkDeprecation({
+    family: "memory-session-sync-inventory",
+    method: "loadArchivedSessions",
+    replacement: "loadArchivedSessionsAsync",
+  });
+  assertBoundIncognitoMemorySyncAccess(params, "loadArchivedSessions", "loadArchivedSessionsAsync");
+  return listSessionTranscriptArchivesReadOnly(params);
+}
+export {
+  listSessionTranscriptArchivesInWorker as loadArchivedSessionsAsync,
+  resolveMemorySessionTargetsInWorker as resolveMemorySessionTargetsAsync,
+} from "../config/sessions/session-transcript-inventory-runtime.js";
 
 export {
-  buildSessionEntry,
+  buildSessionEntries,
   extractKeywords,
   isCronRunSessionKey,
   isDreamingNarrativeSessionStoreKey,
-  isQueryStopWordToken,
-  isSessionArchiveArtifactName,
-  isUsageCountedSessionTranscriptFileName,
-  listSessionFilesForAgent,
-  listSessionTranscriptCorpusEntriesForAgent,
-  loadDreamingNarrativeTranscriptPathSetForAgent,
-  loadSessionTranscriptClassificationForAgent,
-  normalizeSessionTranscriptPathForComparison,
-  parseCanonicalSessionSyncTargetFromPath,
-  parseSqliteSessionFileMarker,
+  matchesSessionEntryPrefixHash,
   parseUsageCountedSessionIdFromFileName,
-  resolveSessionFileForSyncTarget,
-  resolveSessionIdentityForTranscriptFile,
+  readTranscriptStatsBatchReadOnlyAsync,
+  readTranscriptStatsBatchReadOnlySync,
   sessionPathForFile,
   sessionPathForSessionIdentity,
+  statSessionEntry,
   statSessionEntrySync,
 } from "../../packages/memory-host-sdk/src/engine-sessions.js";
+
+// Internal actor sources are not part of the released plugin call signatures.
+export const buildSessionEntry: (
+  absPath: string,
+  options?: Parameters<typeof buildSessionEntryFromHost>[1],
+) => ReturnType<typeof buildSessionEntryFromHost> = buildSessionEntryFromHost;
+export const listSessionTranscriptCorpusEntriesForAgent: (
+  agentId: string,
+  options?: Parameters<typeof listSessionTranscriptCorpusEntriesFromHost>[1],
+) => ReturnType<typeof listSessionTranscriptCorpusEntriesFromHost> =
+  listSessionTranscriptCorpusEntriesFromHost;
+export const readSessionResetRecallCutoff: (
+  scope: Parameters<typeof readSessionResetRecallCutoffFromHost>[0],
+) => ReturnType<typeof readSessionResetRecallCutoffFromHost> = readSessionResetRecallCutoffFromHost;
+
 export type {
-  BuildSessionEntryOptions,
-  ResolvedMemorySessionSyncTarget,
-  ResolvedSessionTranscriptIdentity,
   SessionFileEntry,
   SessionFileState,
-  SessionTranscriptClassification,
   SessionTranscriptCorpusEntry,
-  SessionTranscriptCorpusOptions,
 } from "../../packages/memory-host-sdk/src/engine-sessions.js";
 
-export type MemorySessionTarget = {
-  agentId: string;
-  sessionId: string;
-  sessionKey?: string;
-  resolution: "live" | "archived" | "unresolved";
-  hookExternalContentSource: string | null;
-  channel: string | null;
-  accountId: string | null;
-  chatType: string | null;
-  createdAt?: number;
-  participantIds: string[];
-};
-
-export type MemorySessionSelectors = {
-  agentId: string;
-  sessionIds?: readonly string[];
-  hookSources?: readonly string[];
-  participants?: readonly string[];
-  since?: string | number;
-};
-
-type SessionMetadataDatabase = Pick<
-  OpenClawAgentDatabase,
-  "session_windows" | "session_participants" | "session_transcript_archives"
->;
-
-const SESSION_METADATA_COLUMNS = [
-  "session_windows.session_id",
-  "session_windows.session_key",
-  "session_windows.hook_external_content_source",
-  "session_windows.channel",
-  "session_windows.account_id",
-  "session_windows.chat_type",
-  "session_windows.created_at",
-] as const;
-
-function projectSessionMetadata(
-  agentId: string,
-  row: {
-    session_id: string;
-    session_key: string;
-    hook_external_content_source: string | null;
-    channel: string | null;
-    account_id: string | null;
-    chat_type: string | null;
-    created_at: number;
-  },
-  participantIds: string[] = [],
-): MemorySessionTarget {
-  return {
-    agentId,
-    sessionId: row.session_id,
-    sessionKey: row.session_key,
-    resolution: "live",
-    hookExternalContentSource: row.hook_external_content_source,
-    channel: row.channel,
-    accountId: row.account_id,
-    chatType: row.chat_type,
-    createdAt: row.created_at,
-    participantIds,
-  };
-}
-
-/** Read authoritative admission facts without creating a missing agent database. */
+/** @deprecated Await loadMemorySessionMetadataAsync. Final compatibility day: 2026-12-31. */
 export function loadMemorySessionMetadata(params: {
   agentId: string;
   sessionId: string;
   sessionKey?: string;
+  storePath?: string;
 }): MemorySessionTarget | undefined {
-  const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
-    let query = getNodeSqliteKysely<SessionMetadataDatabase>(db)
-      .selectFrom("session_windows")
-      .select(SESSION_METADATA_COLUMNS)
-      .where("session_id", "=", params.sessionId);
-    if (params.sessionKey) {
-      query = query.where("session_key", "=", params.sessionKey);
-    }
-    const row = executeSqliteQuerySync(db, query).rows[0];
-    return row ? projectSessionMetadata(params.agentId, row) : undefined;
-  }, params);
-  return result.found ? result.value : undefined;
-}
-
-function readSessionArchives(db: DatabaseSync, selectors: readonly string[]) {
-  if (selectors.length === 0 || !tableExists(db, "session_transcript_archives")) {
-    return [];
+  if (isMainThread) {
+    warnPluginSdkDeprecation({
+      family: "memory-session",
+      method: "loadMemorySessionMetadata",
+      replacement: "loadMemorySessionMetadataAsync",
+    });
   }
-  return executeSqliteQuerySync(
-    db,
-    getNodeSqliteKysely<SessionMetadataDatabase>(db)
-      .selectFrom("session_transcript_archives")
-      .select(["archive_name", "session_id", "session_key", "created_at"])
-      .where((expression) =>
-        expression.or([
-          expression("session_id", "in", selectors),
-          expression("session_key", "in", selectors),
-        ]),
-      )
-      .orderBy("created_at")
-      .orderBy("session_id"),
-  ).rows.map((archive) => ({
-    archiveName: archive.archive_name,
-    sessionId: archive.session_id,
-    sessionKey: archive.session_key,
-    createdAt: archive.created_at,
-  }));
-}
-
-/** Resolve retained archive identities after their live session rows disappear. */
-export function loadArchivedSessions(params: {
-  agentId: string;
-  sessionIds: readonly string[];
-}): Array<{ archiveName: string; sessionId: string; sessionKey: string; createdAt: number }> {
-  const sessionIds = [...new Set(params.sessionIds)];
-  if (sessionIds.length === 0) {
-    return [];
-  }
-  const result = withOpenClawAgentDatabaseReadOnly(
-    ({ db }) => readSessionArchives(db, sessionIds),
+  assertBoundIncognitoMemorySyncAccess(
     params,
+    "loadMemorySessionMetadata",
+    "loadMemorySessionMetadataAsync",
   );
-  return result.found ? result.value : [];
+  const instance = listSessionTranscriptInstances(params, {
+    includeAllWindows: true,
+    sessionId: params.sessionId,
+  }).find(
+    (candidate) =>
+      candidate.agentId === normalizeAgentId(params.agentId) &&
+      (!params.sessionKey || candidate.sessionKey === params.sessionKey),
+  );
+  return instance ? projectSessionMetadata(instance) : undefined;
 }
 
-/** Resolve explicit memory-forget selectors against authoritative session owners. */
-export function resolveMemorySessionTargets(params: MemorySessionSelectors): MemorySessionTarget[] {
-  const sessionIds = [...new Set(params.sessionIds ?? [])];
-  const hookSources = [...new Set(params.hookSources ?? [])];
-  const participants = [...new Set(params.participants ?? [])];
-  if (sessionIds.length === 0 && hookSources.length === 0 && participants.length === 0) {
+/** Read the selected transcript's recorded source metadata through its owner. */
+export async function loadMemorySessionMetadataAsync(
+  params: Parameters<typeof loadMemorySessionMetadata>[0],
+): Promise<MemorySessionTarget | undefined> {
+  return (await loadMemorySessionMetadataBatchAsync({ ...params, sessions: [params] }))[0];
+}
+
+/** One history read resolves the complete ingestion batch. */
+export async function loadMemorySessionMetadataBatchAsync(params: {
+  agentId: string;
+  storePath?: string;
+  sessions: readonly { sessionId: string; sessionKey?: string }[];
+}): Promise<MemorySessionTarget[]> {
+  const selectors = new Map<string, Set<string | undefined>>();
+  for (const { sessionId, sessionKey } of params.sessions) {
+    const keys = selectors.get(sessionId) ?? new Set<string | undefined>();
+    keys.add(sessionKey);
+    selectors.set(sessionId, keys);
+  }
+  if (selectors.size === 0) {
     return [];
   }
-  const since = typeof params.since === "string" ? Date.parse(params.since) : params.since;
-  if (since !== undefined && !Number.isFinite(since)) {
-    throw new Error(`Invalid memory session date: ${params.since}`);
-  }
-  const resolvedSelectors = new Set<string>();
-  const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
-    const sessionDb = getNodeSqliteKysely<SessionMetadataDatabase>(db);
-    const hasParticipants = tableExists(db, "session_participants");
-    if (!hasParticipants && sessionIds.length === 0 && hookSources.length === 0) {
-      return [];
-    }
-    let query = sessionDb
-      .selectFrom("session_windows")
-      .select(SESSION_METADATA_COLUMNS)
-      .where((expression) =>
-        expression.or([
-          ...(sessionIds.length > 0
-            ? [
-                expression("session_windows.session_id", "in", sessionIds),
-                expression("session_windows.session_key", "in", sessionIds),
-              ]
-            : []),
-          ...(hookSources.length > 0
-            ? [expression("session_windows.hook_external_content_source", "in", hookSources)]
-            : []),
-          ...(participants.length > 0 && hasParticipants
-            ? [
-                expression.exists(
-                  expression
-                    .selectFrom("session_participants")
-                    .select("session_key")
-                    .whereRef(
-                      "session_participants.session_key",
-                      "=",
-                      "session_windows.session_key",
-                    )
-                    .where("actor_id", "in", participants),
-                ),
-              ]
-            : []),
-        ]),
-      );
-    if (since !== undefined) {
-      query = query.where("session_windows.created_at", ">=", since);
-    }
-    const rows = executeSqliteQuerySync(
-      db,
-      query.orderBy("session_windows.created_at").orderBy("session_windows.session_id"),
-    ).rows;
-    const knownRows =
-      since === undefined || sessionIds.length === 0
-        ? rows
-        : executeSqliteQuerySync(
-            db,
-            sessionDb
-              .selectFrom("session_windows")
-              .select(["session_id", "session_key"])
-              .where((expression) =>
-                expression.or([
-                  expression("session_id", "in", sessionIds),
-                  expression("session_key", "in", sessionIds),
-                ]),
-              ),
-          ).rows;
-    for (const row of knownRows) {
-      resolvedSelectors.add(row.session_id);
-      resolvedSelectors.add(row.session_key);
-    }
-    const participantIds = new Map<string, string[]>();
-    if (rows.length > 0 && hasParticipants) {
-      const keys = [...new Set(rows.map((row) => row.session_key))];
-      const participantRows = executeSqliteQuerySync(
-        db,
-        sessionDb
-          .selectFrom("session_participants")
-          .select(["session_key", "actor_id"])
-          .where("session_key", "in", keys)
-          .orderBy("session_key")
-          .orderBy("actor_id"),
-      ).rows;
-      for (const participant of participantRows) {
-        const ids = participantIds.get(participant.session_key) ?? [];
-        if (!ids.includes(participant.actor_id)) {
-          ids.push(participant.actor_id);
-        }
-        participantIds.set(participant.session_key, ids);
-      }
-    }
-    const targets = new Map(
-      rows.map((row) => [
-        row.session_id,
-        projectSessionMetadata(params.agentId, row, participantIds.get(row.session_key)),
-      ]),
-    );
-    for (const archive of readSessionArchives(db, sessionIds)) {
-      resolvedSelectors.add(archive.sessionId);
-      resolvedSelectors.add(archive.sessionKey);
-      if (targets.has(archive.sessionId) || (since !== undefined && archive.createdAt < since)) {
-        continue;
-      }
-      targets.set(archive.sessionId, {
-        agentId: params.agentId,
-        sessionId: archive.sessionId,
-        sessionKey: archive.sessionKey,
-        resolution: "archived",
-        hookExternalContentSource: null,
-        channel: null,
-        accountId: null,
-        chatType: null,
-        createdAt: archive.createdAt,
-        participantIds: [],
-      });
-    }
-    return [...targets.values()];
-  }, params);
-  const targets = result.found ? result.value : [];
-  for (const sessionId of sessionIds) {
-    if (!resolvedSelectors.has(sessionId)) {
-      targets.push({
-        agentId: params.agentId,
-        sessionId,
-        resolution: "unresolved",
-        hookExternalContentSource: null,
-        channel: null,
-        accountId: null,
-        chatType: null,
-        participantIds: [],
-      });
-    }
-  }
-  return targets;
+  const agentId = normalizeAgentId(params.agentId);
+  const scope = { agentId, storePath: params.storePath };
+  const sessionIds = [...selectors.keys()];
+  const signal = getAsyncWorkSignal();
+  const assertCurrent = () => signal?.throwIfAborted();
+  const memory = captureSessionActorStorageOwner(scope, {
+    assertCurrent,
+    authorize: assertCurrent,
+  });
+  const metadata = memory
+    ? (await resolveMemorySessionTargetsInWorker({ ...scope, sessionIds })).filter(
+        (entry) => entry.resolution === "live",
+      )
+    : (
+        await listSessionTranscriptInstancesInWorker(
+          { ...scope, projection: "list" },
+          { includeAllWindows: true, sessionIds },
+        )
+      ).map((instance) => projectSessionMetadata(instance));
+  return metadata.filter(
+    (entry) =>
+      entry.agentId === agentId &&
+      (selectors.get(entry.sessionId)?.has(undefined) ||
+        selectors.get(entry.sessionId)?.has(entry.sessionKey)),
+  );
+}
+
+/** @deprecated Await resolveMemorySessionTargetsAsync. Final compatibility day: 2026-12-31. */
+export function resolveMemorySessionTargets(params: MemorySessionSelectors): MemorySessionTarget[] {
+  warnPluginSdkDeprecation({
+    family: "memory-session-sync-inventory",
+    method: "resolveMemorySessionTargets",
+    replacement: "resolveMemorySessionTargetsAsync",
+  });
+  assertBoundIncognitoMemorySyncAccess(
+    params,
+    "resolveMemorySessionTargets",
+    "resolveMemorySessionTargetsAsync",
+  );
+  return readMemorySessionTargets(params);
 }

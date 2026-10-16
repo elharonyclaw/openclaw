@@ -1,311 +1,165 @@
-import type { DatabaseSync } from "node:sqlite";
+import path from "node:path";
+import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import type { MemoryEntryOrigin } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { isFileMissingError } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
+import { openOpenClawAgentSqliteWorkerStoreV2 } from "openclaw/plugin-sdk/sqlite-runtime";
+import { DREAMS_FILENAMES, readDreamsFile } from "./dreaming-dreams-file.js";
 import {
-  executeSqliteQuerySync,
-  getNodeSqliteKysely,
-  openOpenClawAgentDatabase,
-  runSqliteImmediateTransactionSync,
-  withOpenClawAgentDatabaseReadOnly,
-} from "openclaw/plugin-sdk/sqlite-runtime";
+  captureMemoryAgentDatabaseOptions,
+  captureMemoryAgentReadTarget,
+} from "./memory-agent-database.js";
+import {
+  MEMORY_SESSION_TOMBSTONE_BATCH_SIZE,
+  type MemoryEntryOriginOperations,
+  type MemoryOriginDeletion,
+  type MemoryOriginRecord,
+} from "./memory-entry-origins-task.js";
+import { captureMemoryMutationAuthority } from "./memory-mutation-authority.js";
+import {
+  assertMemoryShadowIdentity,
+  readMemoryShadowIdentity,
+} from "./memory/manager-shadow-task.js";
+import { extractPromotionKeys } from "./short-term-promotion-memory-write.js";
 
-type MemoryOriginClass = "owner" | "agent" | "untrusted" | "system";
+export type { MemoryEntryOrigin };
 
-export type MemoryEntryOrigin = {
-  entryKey: string;
-  agentId: string;
-  sessionId: string;
-  sessionKey: string | null;
-  originClass: MemoryOriginClass;
-  observedAt: number;
-};
+// Lazy: the runtime-api graph must not statically reach the manager sidecar modules.
+const loadMemoryCpuProcessEntrypoints = createLazyRuntimeModule(
+  () => import("./memory/manager-cpu-entrypoints.js"),
+);
+const loadMemoryCpuWorkerRuntime = createLazyRuntimeModule(
+  () => import("./memory/manager-cpu-worker-runtime.js"),
+);
+type OriginDatabaseOptions = ReturnType<typeof captureMemoryAgentDatabaseOptions>;
 
-type MemorySessionTombstone = {
-  sessionId: string;
-  agentId: string;
-  reason: string;
-  createdAt: number;
-};
-
-type MemoryEntryOriginRow = {
-  entry_key: string;
-  agent_id: string;
-  session_id: string;
-  session_key: string | null;
-  origin_class: MemoryOriginClass;
-  observed_at: number;
-};
-
-type MemorySessionTombstoneRow = {
-  session_id: string;
-  agent_id: string;
-  reason: string;
-  created_at: number;
-};
-
-type MemoryOriginDatabase = {
-  memory_entry_origins: MemoryEntryOriginRow;
-  memory_session_tombstones: MemorySessionTombstoneRow;
-  memory_index_state: { id: number; revision: number };
-};
-type SqliteSchemaDatabase = { sqlite_schema: { type: string; name: string } };
-const ensuredDatabases = new WeakSet<DatabaseSync>();
-const ensuredTombstoneDatabases = new WeakSet<DatabaseSync>();
-
-function openMemoryOriginDatabase(agentId: string): DatabaseSync {
-  const db = openOpenClawAgentDatabase({ agentId }).db;
-  if (!ensuredDatabases.has(db)) {
-    db.exec(`CREATE TABLE IF NOT EXISTS memory_entry_origins (
-      entry_key TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      session_key TEXT,
-      origin_class TEXT NOT NULL CHECK (origin_class IN ('owner', 'agent', 'untrusted', 'system')),
-      observed_at INTEGER NOT NULL,
-      PRIMARY KEY (entry_key, agent_id, session_id)
-    ) STRICT`);
-    ensuredDatabases.add(db);
-  }
-  return db;
-}
-
-function hasMemoryTable(db: DatabaseSync, tableName: string): boolean {
-  const schema = getNodeSqliteKysely<SqliteSchemaDatabase>(db);
-  return (
-    executeSqliteQuerySync(
-      db,
-      schema
-        .selectFrom("sqlite_schema")
-        .select("name")
-        .where("type", "=", "table")
-        .where("name", "=", tableName),
-    ).rows.length > 0
+async function executeOriginCommand<Key extends "record" | "delete" | "reserve" | "prune">(
+  options: OriginDatabaseOptions,
+  command: { type: Key; input: MemoryEntryOriginOperations[Key]["input"] },
+  assertOriginal?: () => void,
+): Promise<MemoryEntryOriginOperations[Key]["output"] | undefined> {
+  const { memoryCpuProcessEntrypoints } = await loadMemoryCpuProcessEntrypoints();
+  const moduleUrl = resolveRuntimeWorkerUrl(memoryCpuProcessEntrypoints.entryOrigins);
+  assertOriginal?.();
+  const worker = await openOpenClawAgentSqliteWorkerStoreV2<MemoryEntryOriginOperations>(
+    options,
+    { version: 2, assertCurrent: () => assertOriginal?.() },
+    { moduleUrl, input: { kind: command.type === "record" ? "origin" : "origin-existing" } },
   );
+  try {
+    if (command.type === "record") {
+      await worker.prepare();
+      return await worker.run(
+        (scope) => scope.execute(command),
+        () => assertOriginal?.(),
+      );
+    }
+    return (await worker.executeExisting(command, () => assertOriginal?.()))?.value;
+  } finally {
+    await worker.close();
+  }
 }
 
-function originRow(origin: MemoryEntryOrigin): MemoryEntryOriginRow {
-  return {
-    entry_key: origin.entryKey,
-    agent_id: origin.agentId,
-    session_id: origin.sessionId,
-    session_key: origin.sessionKey,
-    origin_class: origin.originClass,
-    observed_at: origin.observedAt,
-  };
-}
-
-function readOrigin(row: MemoryEntryOriginRow): MemoryEntryOrigin {
-  return {
-    entryKey: row.entry_key,
-    agentId: row.agent_id,
-    sessionId: row.session_id,
-    sessionKey: row.session_key,
-    originClass: row.origin_class,
-    observedAt: row.observed_at,
-  };
-}
-
-export function listMemoryEntryOrigins(params: {
-  agentId: string;
-  sessionIds?: readonly string[];
-  entryKeys?: readonly string[];
-}): MemoryEntryOrigin[] {
+export async function listMemoryEntryOrigins(
+  params: {
+    agentId: string;
+    sessionIds?: readonly string[];
+    entryKeys?: readonly string[];
+  },
+  options?: OriginDatabaseOptions,
+): Promise<MemoryEntryOrigin[]> {
   if (params.sessionIds?.length === 0 || params.entryKeys?.length === 0) {
     return [];
   }
-  const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
-    if (!ensuredDatabases.has(db) && !hasMemoryTable(db, "memory_entry_origins")) {
-      return [];
-    }
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    let query = kysely
-      .selectFrom("memory_entry_origins")
-      .selectAll()
-      .where("agent_id", "=", params.agentId);
-    if (params.sessionIds) {
-      query = query.where("session_id", "in", params.sessionIds);
-    }
-    if (params.entryKeys) {
-      query = query.where("entry_key", "in", params.entryKeys);
-    }
-    return executeSqliteQuerySync(
-      db,
-      query.orderBy("entry_key", "asc").orderBy("session_id", "asc"),
-    ).rows.map(readOrigin);
-  }, params);
-  return result.found ? result.value : [];
+  const target = captureMemoryAgentReadTarget(
+    options ?? captureMemoryAgentDatabaseOptions(params.agentId),
+  );
+  const filters = {
+    ...(params.sessionIds ? { sessionIds: [...params.sessionIds] } : {}),
+    ...(params.entryKeys ? { entryKeys: [...params.entryKeys] } : {}),
+  };
+  const { runMemoryOriginRead } = await loadMemoryCpuWorkerRuntime();
+  return (await runMemoryOriginRead({ ...target, ...filters, kind: "origin-rows" })).rows;
 }
 
-export function listMemorySessionTombstones(params: {
-  agentId: string;
-  sessionIds?: readonly string[];
-}): MemorySessionTombstone[] {
-  if (params.sessionIds?.length === 0) {
-    return [];
-  }
-  const result = withOpenClawAgentDatabaseReadOnly(({ db }) => {
-    if (!ensuredTombstoneDatabases.has(db) && !hasMemoryTable(db, "memory_session_tombstones")) {
-      return [];
-    }
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    let query = kysely
-      .selectFrom("memory_session_tombstones")
-      .selectAll()
-      .where("agent_id", "=", params.agentId);
-    if (params.sessionIds) {
-      query = query.where("session_id", "in", params.sessionIds);
-    }
-    return executeSqliteQuerySync(db, query.orderBy("session_id", "asc")).rows.map((row) => ({
-      sessionId: row.session_id,
-      agentId: row.agent_id,
-      reason: row.reason,
-      createdAt: row.created_at,
-    }));
-  }, params);
-  return result.found ? result.value : [];
-}
-
-export function recordMemorySessionTombstones(params: {
+export async function findForgottenMemorySessionIds(params: {
   agentId: string;
   sessionIds: readonly string[];
-  reason?: string;
-  createdAt?: number;
-}): number {
-  const sessionIds = [...new Set(params.sessionIds)];
-  if (sessionIds.length === 0) {
-    return 0;
+}): Promise<Set<string>> {
+  const forgotten = new Set<string>();
+  if (params.sessionIds.length === 0) {
+    return forgotten;
   }
-  const db = openOpenClawAgentDatabase({ agentId: params.agentId }).db;
-  if (!ensuredTombstoneDatabases.has(db)) {
-    db.exec(`CREATE TABLE IF NOT EXISTS memory_session_tombstones (
-      session_id TEXT NOT NULL PRIMARY KEY,
-      agent_id TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    ) STRICT`);
-    ensuredTombstoneDatabases.add(db);
+  const target = captureMemoryAgentReadTarget(captureMemoryAgentDatabaseOptions(params.agentId));
+  const sessionIds = [...params.sessionIds];
+  const { runMemoryOriginRead } = await loadMemoryCpuWorkerRuntime();
+  for (let start = 0; start < sessionIds.length; start += MEMORY_SESSION_TOMBSTONE_BATCH_SIZE) {
+    const page = sessionIds.slice(start, start + MEMORY_SESSION_TOMBSTONE_BATCH_SIZE);
+    const { indices } = await runMemoryOriginRead({
+      ...target,
+      sessionIds: page,
+      kind: "session-tombstones",
+    });
+    for (const index of indices) {
+      forgotten.add(page[index]!);
+    }
   }
-  const reason = params.reason ?? "forgotten";
-  const createdAt = params.createdAt ?? Date.now();
-  return runSqliteImmediateTransactionSync(db, () => {
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    let recorded = 0;
-    for (const sessionId of sessionIds) {
-      const result = executeSqliteQuerySync(
-        db,
-        kysely
-          .insertInto("memory_session_tombstones")
-          .values({
-            session_id: sessionId,
-            agent_id: params.agentId,
-            reason,
-            created_at: createdAt,
-          })
-          .onConflict((conflict) => conflict.column("session_id").doNothing()),
-      );
-      recorded += Number(result.numAffectedRows ?? 0n);
-    }
-    if (recorded > 0) {
-      // A shadow index can have no published chunks yet. Its existing revision
-      // fence must still reject a rebuild prepared before this deletion.
-      executeSqliteQuerySync(
-        db,
-        kysely
-          .updateTable("memory_index_state")
-          .set((expression) => ({ revision: expression("revision", "+", 1) }))
-          .where("id", "=", 1),
-      );
-    }
-    return recorded;
-  });
+  return forgotten;
 }
 
-export function hasMemorySessionTombstone(
-  db: DatabaseSync,
-  agentId: string,
-  sessionId: string,
-): boolean {
-  if (!ensuredTombstoneDatabases.has(db) && !hasMemoryTable(db, "memory_session_tombstones")) {
-    return false;
+export async function recordMemoryEntryOrigins(
+  params: MemoryOriginRecord,
+): Promise<MemoryEntryOrigin[]> {
+  if (params.origins.length === 0) {
+    return [];
   }
-  const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
+  const input = {
+    agentId: params.agentId,
+    entryKey: params.entryKey,
+    origins: params.origins.map((origin) => ({
+      entryKey: origin.entryKey,
+      agentId: origin.agentId,
+      sessionId: origin.sessionId,
+      sessionKey: origin.sessionKey,
+      originClass: origin.originClass,
+      observedAt: origin.observedAt,
+    })),
+  };
   return (
-    executeSqliteQuerySync(
-      db,
-      kysely
-        .selectFrom("memory_session_tombstones")
-        .select("session_id")
-        .where("agent_id", "=", agentId)
-        .where("session_id", "=", sessionId),
-    ).rows.length > 0
+    (await executeOriginCommand(
+      captureMemoryAgentDatabaseOptions(params.agentId),
+      {
+        type: "record",
+        input,
+      },
+      captureMemoryMutationAuthority(),
+    )) ?? []
   );
 }
 
-export function recordMemoryEntryOrigins(params: {
-  agentId: string;
-  origins: readonly MemoryEntryOrigin[];
-}): void {
-  if (params.origins.length === 0) {
-    return;
-  }
-  const db = openMemoryOriginDatabase(params.agentId);
-  runSqliteImmediateTransactionSync(db, () => {
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    for (const origin of params.origins) {
-      if (origin.agentId !== params.agentId) {
-        throw new Error("memory entry origin belongs to another agent");
-      }
-      executeSqliteQuerySync(
-        db,
-        kysely
-          .insertInto("memory_entry_origins")
-          .values(originRow(origin))
-          .onConflict((conflict) =>
-            conflict.columns(["entry_key", "agent_id", "session_id"]).doNothing(),
-          ),
-      );
-    }
-  });
-}
-
-export function deleteMemoryEntryOrigins(params: {
-  agentId: string;
-  entryKeys: readonly string[];
-}): number {
-  if (params.entryKeys.length === 0) {
+async function deleteMemoryEntryOrigins(
+  params: MemoryOriginDeletion,
+  options: OriginDatabaseOptions,
+  assertOriginal: () => void,
+): Promise<number> {
+  if (params.entryKeys.length === 0 || params.sessionIds?.length === 0) {
     return 0;
   }
-  const db = openMemoryOriginDatabase(params.agentId);
-  return runSqliteImmediateTransactionSync(db, () => {
-    const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-    const result = executeSqliteQuerySync(
-      db,
-      kysely
-        .deleteFrom("memory_entry_origins")
-        .where("agent_id", "=", params.agentId)
-        .where("entry_key", "in", params.entryKeys),
-    );
-    return Number(result.numAffectedRows ?? 0n);
-  });
+  return (
+    (await executeOriginCommand(options, { type: "delete", input: params }, assertOriginal)) ?? 0
+  );
 }
 
-export function reconcileMemoryEntryOrigins(params: {
+export async function reserveMemoryEntryOrigins(params: {
   agentIds: readonly string[];
   previousMemory: string;
-  currentMemory: string;
   operations: readonly {
     candidateKey: string;
     action: "added" | "merged" | "superseded";
     priorEntries: readonly string[];
   }[];
-}): void {
-  if (params.operations.length === 0) {
-    return;
-  }
+}): Promise<() => Promise<void>> {
   const previousLines = params.previousMemory.replace(/\r\n/gu, "\n").split("\n");
-  const promotionKeys = (content: string) =>
-    [...content.matchAll(/<!--\s*openclaw-memory-promotion:([^\n]*?)\s*-->/giu)]
-      .map((match) => match[1]?.trim())
-      .filter((key): key is string => Boolean(key));
-  const liveKeys = new Set(promotionKeys(params.currentMemory));
   const operationParents = params.operations.map((operation) => {
     const parentKeys = new Set([operation.candidateKey]);
     for (const entry of operation.priorEntries) {
@@ -318,49 +172,92 @@ export function reconcileMemoryEntryOrigins(params: {
         parentKeys.add(parentKey);
       }
     }
-    return { operation, parentKeys: [...parentKeys] };
+    return { operation: { ...operation, priorEntries: [...operation.priorEntries] }, parentKeys };
   });
-  const retiredKeys = promotionKeys(params.previousMemory).filter((key) => !liveKeys.has(key));
-  const affectedKeys = [
-    ...new Set([...retiredKeys, ...operationParents.flatMap(({ parentKeys }) => parentKeys)]),
-  ];
-  for (const agentId of [...new Set(params.agentIds)].toSorted()) {
-    if (listMemoryEntryOrigins({ agentId, entryKeys: affectedKeys }).length === 0) {
-      continue;
+  const affectedKeys = [...new Set(operationParents.flatMap(({ parentKeys }) => [...parentKeys]))];
+  if (affectedKeys.length === 0) {
+    return async () => {};
+  }
+  const owners = [...new Set(params.agentIds)].toSorted().map(captureMemoryAgentDatabaseOptions);
+  const reservations: Array<{
+    params: MemoryOriginDeletion;
+    options: OriginDatabaseOptions;
+    assertCurrent: () => void;
+  }> = [];
+  const rollback = async () => {
+    for (const reservation of reservations.toReversed()) {
+      await deleteMemoryEntryOrigins(
+        reservation.params,
+        reservation.options,
+        reservation.assertCurrent,
+      );
     }
-    const db = openMemoryOriginDatabase(agentId);
-    runSqliteImmediateTransactionSync(db, () => {
-      const kysely = getNodeSqliteKysely<MemoryOriginDatabase>(db);
-      for (const { operation, parentKeys } of operationParents) {
-        const rows = executeSqliteQuerySync(
-          db,
-          kysely
-            .selectFrom("memory_entry_origins")
-            .selectAll()
-            .where("agent_id", "=", agentId)
-            .where("entry_key", "in", parentKeys),
-        ).rows;
-        for (const row of rows) {
-          executeSqliteQuerySync(
-            db,
-            kysely
-              .insertInto("memory_entry_origins")
-              .values({ ...row, entry_key: operation.candidateKey })
-              .onConflict((conflict) =>
-                conflict.columns(["entry_key", "agent_id", "session_id"]).doNothing(),
-              ),
-          );
+  };
+  try {
+    for (const options of owners) {
+      let identity: ReturnType<typeof readMemoryShadowIdentity>;
+      try {
+        identity = readMemoryShadowIdentity(options.path);
+      } catch (error) {
+        if (isFileMissingError(error)) {
+          continue;
         }
+        throw error;
       }
-      if (retiredKeys.length > 0) {
-        executeSqliteQuerySync(
-          db,
-          kysely
-            .deleteFrom("memory_entry_origins")
-            .where("agent_id", "=", agentId)
-            .where("entry_key", "in", retiredKeys),
-        );
+      const assertCurrent = () => assertMemoryShadowIdentity(options.path, identity);
+      const added =
+        (await executeOriginCommand(
+          options,
+          {
+            type: "reserve",
+            input: {
+              agentId: options.agentId,
+              operations: operationParents.map(({ operation, parentKeys }) => ({
+                entryKey: operation.candidateKey,
+                parentKeys: [...parentKeys],
+              })),
+            },
+          },
+          assertCurrent,
+        )) ?? [];
+      for (const deletion of added) {
+        reservations.push({ params: deletion, options, assertCurrent });
       }
+    }
+  } catch (error) {
+    await rollback();
+    throw error;
+  }
+  return rollback;
+}
+
+export async function pruneMemoryEntryOrigins(params: {
+  workspaceDir: string;
+  agentIds: readonly string[];
+  entryKeys: Iterable<string>;
+  retainedEntryKeys: ReadonlySet<string>;
+}): Promise<void> {
+  const entryKeys = [...new Set(params.entryKeys)].filter(
+    (key) => !params.retainedEntryKeys.has(key),
+  );
+  if (entryKeys.length === 0) {
+    return;
+  }
+  const owners = [...new Set(params.agentIds)].map(captureMemoryAgentDatabaseOptions);
+  // Keep diary origins through backup rotation; callers hold the workspace lock.
+  const diaries = await Promise.all(
+    DREAMS_FILENAMES.map((name) =>
+      readDreamsFile(path.join(params.workspaceDir, name), params.workspaceDir),
+    ),
+  );
+  const diaryKeys = new Set(diaries.flatMap(extractPromotionKeys));
+  for (const options of owners) {
+    await executeOriginCommand(options, {
+      type: "prune",
+      input: {
+        agentId: options.agentId,
+        entryKeys: entryKeys.filter((key) => !diaryKeys.has(key)),
+      },
     });
   }
 }

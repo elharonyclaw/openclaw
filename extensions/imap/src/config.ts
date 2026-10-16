@@ -1,8 +1,13 @@
+import type { IdentifierAuthentication } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { asOptionalRecord, filterStringEntries } from "openclaw/plugin-sdk/string-coerce-runtime";
 
-export const SENDER_STRENGTHS = ["mutable", "unverified", "asserted", "verified"] as const;
-export type SenderStrength = (typeof SENDER_STRENGTHS)[number];
+const SENDER_STRENGTHS = [
+  "mutable",
+  "unverified",
+  "asserted",
+  "verified",
+] as const satisfies readonly IdentifierAuthentication[];
 type HookDispatch = OpenClawPluginApi["runtime"]["hooks"]["dispatchHookAgentTurn"];
 
 export type ImapAccountConfig = {
@@ -15,7 +20,7 @@ export type ImapAccountConfig = {
   watch: { mode: "auto" | "idle" | "interval"; pollSeconds: number };
   allowedSenders: string[];
   senderAuth: {
-    min: SenderStrength;
+    min: IdentifierAuthentication;
     trustedAuthservIds: string[];
     acceptTrustedAuthservId: boolean;
   };
@@ -31,23 +36,17 @@ export type ImapAccountConfig = {
 
 export type ImapPluginConfig = { accounts: Record<string, ImapAccountConfig> };
 
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
 export function resolveImapConfig(
   value: unknown,
   onUnavailableAccount?: (accountId: string) => void,
 ): ImapPluginConfig {
-  const configured = asNonArrayRecord(asNonArrayRecord(value)?.accounts);
+  const configured = asOptionalRecord(asOptionalRecord(value)?.accounts);
   const accounts: Record<string, ImapAccountConfig> = {};
   for (const [accountId, input] of Object.entries(configured ?? {})) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(accountId)) {
       throw new Error(`IMAP account id ${JSON.stringify(accountId)} is not session-safe`);
     }
-    const account = asNonArrayRecord(input);
+    const account = asOptionalRecord(input);
     if (!account) {
       throw new Error(`IMAP account ${accountId} must be an object`);
     }
@@ -58,14 +57,14 @@ export function resolveImapConfig(
       );
     }
     if (typeof password !== "string") {
-      if (asNonArrayRecord(password)) {
+      if (asOptionalRecord(password)) {
         onUnavailableAccount?.(accountId);
         continue;
       }
       throw new Error(`IMAP account ${accountId} requires a resolved password`);
     }
-    const watch = asNonArrayRecord(account.watch);
-    const senderAuth = asNonArrayRecord(account.senderAuth);
+    const watch = asOptionalRecord(account.watch);
+    const senderAuth = asOptionalRecord(account.senderAuth);
     const mode = watch?.mode;
     const min = senderAuth?.min;
     const thinking = [
@@ -93,17 +92,21 @@ export function resolveImapConfig(
         mode: mode === "idle" || mode === "interval" ? mode : "auto",
         pollSeconds: Math.max(15, typeof watch?.pollSeconds === "number" ? watch.pollSeconds : 60),
       },
-      allowedSenders: stringList(account.allowedSenders),
+      allowedSenders: filterStringEntries(account.allowedSenders),
       senderAuth: {
-        min: SENDER_STRENGTHS.find((strength) => strength === min) ?? "verified",
-        trustedAuthservIds: stringList(senderAuth?.trustedAuthservIds),
+        // The predicate requires every SDK strength to remain in the local config values.
+        min:
+          SENDER_STRENGTHS.find(
+            (strength): strength is IdentifierAuthentication => strength === min,
+          ) ?? "verified",
+        trustedAuthservIds: filterStringEntries(senderAuth?.trustedAuthservIds),
         acceptTrustedAuthservId: senderAuth?.acceptTrustedAuthservId === true,
       },
       addressTokens: Array.isArray(account.addressTokens)
         ? account.addressTokens.flatMap((entry) => {
-            const tokenEntry = asNonArrayRecord(entry);
+            const tokenEntry = asOptionalRecord(entry);
             return typeof tokenEntry?.token === "string"
-              ? [{ token: tokenEntry.token, senders: stringList(tokenEntry.senders) }]
+              ? [{ token: tokenEntry.token, senders: filterStringEntries(tokenEntry.senders) }]
               : [];
           })
         : [],

@@ -1,8 +1,48 @@
 import { describe, expect, it } from "vitest";
 import {
   hasSessionActiveAutoModelFallback,
+  hasSessionAutoModelSelection,
+  hasUserPinnedModelSelection,
   resolveSessionModelOverrideSource,
 } from "./model-override-provenance.js";
+
+describe("hasUserPinnedModelSelection", () => {
+  it.each([
+    {
+      name: "legacy user override",
+      entry: { providerOverride: "openai", modelOverride: "gpt-5.6-sol" },
+      expected: true,
+    },
+    {
+      name: "legacy fallback provenance",
+      entry: {
+        providerOverride: "fallback",
+        modelOverride: "secondary",
+        modelOverrideFallbackOriginProvider: "primary",
+        modelOverrideFallbackOriginModel: "main",
+      },
+      expected: false,
+    },
+    {
+      name: "explicit default with stale override fields",
+      entry: {
+        providerOverride: "openai",
+        modelOverride: "gpt-5.6-sol",
+        modelOverrideSource: "default" as const,
+      },
+      expected: false,
+    },
+  ])("returns $expected for $name", ({ entry, expected }) => {
+    expect(hasUserPinnedModelSelection(entry)).toBe(expected);
+  });
+
+  it("preserves truthy status classification before resolver normalization", () => {
+    const entry = { modelOverride: "  ", modelOverrideSource: "user" as const };
+
+    expect(hasUserPinnedModelSelection(entry)).toBe(true);
+    expect(resolveSessionModelOverrideSource(entry)).toBeNull();
+  });
+});
 
 describe("resolveSessionModelOverrideSource", () => {
   it.each([
@@ -16,6 +56,11 @@ describe("resolveSessionModelOverrideSource", () => {
       name: "automatic fallback",
       entry: { modelOverride: "fallback", modelOverrideSource: "auto" as const },
       expected: "auto",
+    },
+    {
+      name: "explicit default with stale override fields",
+      entry: { modelOverride: "gpt-5.6-sol", modelOverrideSource: "default" as const },
+      expected: null,
     },
     {
       name: "legacy user pin",
@@ -46,6 +91,7 @@ describe("hasSessionActiveAutoModelFallback", () => {
         modelOverride: "secondary",
         modelOverrideSource: "auto" as const,
       },
+      automaticSelection: false,
       expected: false,
     },
     {
@@ -57,6 +103,7 @@ describe("hasSessionActiveAutoModelFallback", () => {
         modelOverrideFallbackOriginProvider: "primary",
         modelOverrideFallbackOriginModel: "main",
       },
+      automaticSelection: true,
       expected: true,
     },
     {
@@ -67,6 +114,7 @@ describe("hasSessionActiveAutoModelFallback", () => {
         modelOverrideFallbackOriginProvider: "primary",
         modelOverrideFallbackOriginModel: "main",
       },
+      automaticSelection: true,
       expected: true,
     },
     {
@@ -78,6 +126,7 @@ describe("hasSessionActiveAutoModelFallback", () => {
         modelOverrideFallbackOriginProvider: "primary",
         modelOverrideFallbackOriginModel: "main",
       },
+      automaticSelection: true,
       expected: false,
     },
     {
@@ -89,9 +138,11 @@ describe("hasSessionActiveAutoModelFallback", () => {
         modelOverrideFallbackOriginProvider: "primary",
         modelOverrideFallbackOriginModel: "main",
       },
+      automaticSelection: false,
       expected: false,
     },
-  ])("returns $expected for $name", ({ entry, expected }) => {
+  ])("returns $expected for $name", ({ entry, expected, automaticSelection }) => {
     expect(hasSessionActiveAutoModelFallback(entry)).toBe(expected);
+    expect(hasSessionAutoModelSelection(entry)).toBe(automaticSelection);
   });
 });

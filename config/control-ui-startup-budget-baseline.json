@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 344044,
-  "reason": "mobile drawer modal ownership and breakpoint-gated swipe loader; measured 344044 B with desktop request and modal regression coverage",
-  "updatedAt": "2026-08-27"
+  "startupJsGzipBytes": 374285,
+  "reason": "Restored the original startup budget after the Solid shell and overlay primitives landed; main measured 342,363 B gzip at the restore.",
+  "updatedAt": "2026-10-12"
 }

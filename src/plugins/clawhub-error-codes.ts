@@ -16,13 +16,35 @@ export const CLAWHUB_INSTALL_ERROR_CODE = {
   ARTIFACT_DOWNLOAD_UNAVAILABLE: "artifact_download_unavailable",
   ARCHIVE_INTEGRITY_MISMATCH: "archive_integrity_mismatch",
   CLAWHUB_SECURITY_UNAVAILABLE: "clawhub_security_unavailable",
-  CLAWHUB_RISK_ACKNOWLEDGEMENT_REQUIRED: "clawhub_risk_acknowledgement_required",
   CLAWHUB_DOWNLOAD_BLOCKED: "clawhub_download_blocked",
 } as const;
 
 /** Union of stable ClawHub install error code values. */
 export type ClawHubInstallErrorCode =
   (typeof CLAWHUB_INSTALL_ERROR_CODE)[keyof typeof CLAWHUB_INSTALL_ERROR_CODE];
+
+export type ClawHubInstallFailure = {
+  ok: false;
+  error: string;
+  code?: ClawHubInstallErrorCode;
+  warning?: string;
+  version?: string;
+};
+
+export function buildClawHubInstallFailure(
+  error: string,
+  code?: ClawHubInstallErrorCode,
+  warning?: string,
+  version?: string,
+): ClawHubInstallFailure {
+  return {
+    ok: false,
+    error,
+    ...(code ? { code } : {}),
+    ...(warning ? { warning } : {}),
+    ...(version ? { version } : {}),
+  };
+}
 
 /**
  * Detects ClawHub failures caused by a target that is not published, as opposed

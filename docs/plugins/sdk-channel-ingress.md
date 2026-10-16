@@ -14,15 +14,18 @@ generic policy: DM/group allowlists, pairing-store DM entries, route gates,
 command gates, event auth, mention activation, redacted diagnostics, and
 admission.
 
-Use `openclaw/plugin-sdk/channel-ingress-runtime` for receive paths.
+Use `runtime.channel.inbound.ingress` for receive paths. Import identity and
+policy utilities from `openclaw/plugin-sdk/channel-ingress-runtime`.
 
 ## Runtime resolver
 
+In this example, `cfg` is the root OpenClaw configuration and `config` is the
+resolved channel-account configuration. Supply `runtime`, `normalizePlatformUserId`,
+`route`, `agentRoute`, `readStoreAllowFrom`, and the message facts from your
+plugin's receive path.
+
 ```ts
-import {
-  defineStableChannelIngressIdentity,
-  resolveChannelMessageIngress,
-} from "openclaw/plugin-sdk/channel-ingress-runtime";
+import { defineStableChannelIngressIdentity } from "openclaw/plugin-sdk/channel-ingress-runtime";
 
 const identity = defineStableChannelIngressIdentity({
   key: "platform-user-id",
@@ -30,7 +33,7 @@ const identity = defineStableChannelIngressIdentity({
   sensitivity: "pii",
 });
 
-const result = await resolveChannelMessageIngress({
+const result = await runtime.channel.inbound.ingress.resolve({
   channelId: "my-channel",
   accountId,
   identity,
@@ -68,13 +71,53 @@ Do not precompute effective allowlists, command owners, or command groups.
 The resolver derives them from raw allowlists, store callbacks, route
 descriptors, access groups, policy, and conversation kind.
 
+The runtime exposes `createResolver`, `resolve`, and `resolveStable` with the
+same inputs as the standalone SDK helpers. Its resolver and `buildContext`
+share one host instance and plugin lifetime. Use both from the same runtime;
+another Gateway or a replacement plugin cannot redeem the result.
+
+The standalone `resolveChannelMessageIngress`,
+`resolveStableChannelMessageIngress`, and `createChannelIngressResolver`
+helpers retain the receive-path contract documented in OpenClaw 2026.9.5.
+In a host-managed callback of a trusted,
+active channel plugin, they delegate to that exact plugin instance's registered
+runtime, preserving participant attribution when the result enters its
+`buildContext`. A factory created during registration retains its creating
+instance; calling it from another plugin does not borrow that plugin's authority.
+Unqualified calls remain policy-only. Retired instances and stale or mismatched
+handoffs cannot attach trusted identity. New receive paths should use the
+explicit runtime methods above; existing standalone callers remain supported.
+
 For a result that will enter a host context, resolve after the channel's route
 owner has selected the final agent and session. `contextBinding` freezes those
-facts with the stable transport message id (when present) and final inbound
-event kind. Decision-only checks may omit it, but such a result is not valid
+facts with the final host-context message id (after any reply-ID mapping) and
+inbound event kind. Set `contextBinding.nativeChannelId` to the host context's
+`reply.nativeChannelId ?? conversation.nativeChannelId`, even when it equals
+the conversation's `id`. Decision-only checks may omit the binding, but such a result is not valid
 execution provenance and must not be passed as `channelIngress`. When a channel
 batches several admitted messages, pass their exact results in source order;
 the finalized context message id identifies the last source result.
+
+### Product participant identity
+
+An identity descriptor may provide `resolveParticipant(subject)`, returning
+`{ domain, idKind, id }` only when the plugin can prove those remote facts.
+The domain belongs to the remote service: for example, a Slack workspace or
+an application-scoped identity issuer. It is not OpenClaw's local `accountId`.
+Keep user IDs, bot IDs, and proxy identities distinct when the service gives
+them different meanings. Names and successful Gateway profile lookups are
+not identity evidence.
+
+Pass the exact resolver result through the host-injected context builder.
+The host carries product facts privately until accepted input is recorded in
+the session participant aggregate. Raw product identity is not added to the
+public diagnostic result. An unqualified producer retains an unresolved
+observation instead of becoming a Gateway profile or an invented remote
+subject. Product participation does not grant access.
+
+This product path is independent of execution-identity audit collection:
+it neither enables that collection nor reuses its HMAC references or opaque
+diagnostic carriers. Audit's separate evidence contract is described below.
 
 ## Result
 
@@ -122,7 +165,7 @@ The audit states are distinct:
   yield a present invoker and enforced or attribution-only coverage.
 - **unknown**: a supported handoff was missing, stale, fake, reused, mixed, or
   otherwise failed host validation. Unknown never means allowed.
-- **unsupported**: a named path has no Phase 0 authoritative integration and
+- **unsupported**: a named path has no authoritative ingress-resolver integration and
   explicitly passes `channelIngress: "unsupported"`. Unsupported never means
   allowed and is not a shortcut for incomplete wiring.
 
@@ -134,6 +177,10 @@ channel authorization only. It is not a principal, grant, relationship, or
 execution-identity assurance strength. In particular, an identifier claim of
 `verified` never becomes execution assurance `boundary-verified` or
 `cryptographic`.
+
+Import the type and `meetsIdentifierAuthentication(actual, minimum)` from
+`openclaw/plugin-sdk/channel-ingress-runtime`. Downstream authentication mappers
+should use this boolean comparator instead of maintaining their own rank tables.
 
 The meanings are normative:
 
@@ -162,6 +209,19 @@ field it wants counted. A field missing from a supplied map is treated as
 `unverified`, even if its identity descriptor declares a stronger static claim.
 Channels with static strength omit the map entirely.
 
+Expose `classifyEntryAuthentication: identityEntryAuthenticationClassifier(identity)`
+from the security adapter's `resolveDmPolicy` result, importing the helper from
+`openclaw/plugin-sdk/channel-ingress-runtime`. It uses the identity descriptor's
+entry normalizers and returns the strongest static claim among accepting fields,
+or `undefined` when none accepts the entry; wildcard entries are excluded.
+The [security audit](/gateway/security/audit-checks) counts configured `allowFrom`
+entries that depend only on mutable identifiers: it warns when name matching is
+disabled and, when enabled, previews how many entries would stop authorizing
+after disabling it. Findings contain counts and config paths, not raw entries;
+pairing-store approvals are outside this check.
+Symbolic `accessGroup:` references resolve membership separately and are not
+counted as mutable identifiers.
+
 Existing plugins remain source-compatible during the deprecation window:
 
 | Deprecated field                                   | Exact mapping                        |
@@ -172,9 +232,8 @@ Existing plugins remain source-compatible during the deprecation window:
 | `mutableIdentifierMatching: "disabled"` or omitted | default minimum `asserted`           |
 
 An explicit `authentication` or `minIdentifierAuthentication` takes
-precedence. The deprecated fields remain through the current Plugin SDK major
-and are planned for removal in the next major after bundled and known external
-plugins migrate.
+precedence. The deprecated fields remain until a separately announced ordinary
+stable removal release after bundled and known external plugins migrate.
 
 ### Bundled channel declarations
 
@@ -200,7 +259,7 @@ claim from message text, routing, or host evidence-carrier integrity.
 `accessGroup:<name>` entries stay redacted. Core resolves static
 `message.senders` groups itself and calls `resolveAccessGroupMembership` only
 for dynamic groups that require a platform lookup. Missing, unsupported, and
-failed groups fail closed.
+failed groups deny access.
 
 ## Event modes
 
@@ -258,3 +317,9 @@ diagnostic ids.
 pnpm test src/channels/message-access/message-access.test.ts src/plugin-sdk/channel-ingress-runtime.test.ts
 pnpm plugin-sdk:api:diff --base "$(git merge-base origin/main HEAD)" --head HEAD
 ```
+
+## Related
+
+- [Channel inbound API](/plugins/sdk-channel-inbound) — the receive path that consumes this resolver result as `channelIngress`
+- [Channel outbound API](/plugins/sdk-channel-outbound) — the send side of the same channel plugin
+- [Building channel plugins](/plugins/sdk-channel-plugins) — the full channel plugin walkthrough
